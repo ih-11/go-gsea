@@ -2,8 +2,9 @@
 tests/test_ora.py
 """
 import pandas as pd
+import pytest
 from enrichment.ora import fisher_exact_for_term, fold_enrichment, bh_correct
-from enrichment.ora import count_term_occurrences, run_ora
+from enrichment.ora import count_term_occurrences, run_ora, restrict_to_annotated_genes
 
 def test_fisher_exact_detects_strong_overrepresentation():
     p_value = fisher_exact_for_term(
@@ -159,3 +160,58 @@ def test_run_ora_empty_class_returns_empty_dataframe():
     labeled_df = pd.DataFrame({"gene_id": ["g1"], "class": [None]})
     result = run_ora(gene_go, labeled_df)
     assert len(result) == 0
+
+def test_restrict_to_annotated_genes_drops_unknown_ids():
+    gene_go = {"g1": {"GO:0001"}, "g2": {"GO:0001"}}
+    labeled_df = pd.DataFrame({
+        "gene_id": ["g1", "g2", "g3", "g4"],  # g3, g4 not in gene_go
+        "class": ["High", "Low", "High", "Low"],
+    })
+    result, n_unknown, ratio = restrict_to_annotated_genes(labeled_df, gene_go)
+    assert set(result["gene_id"]) == {"g1", "g2"}
+    assert n_unknown == 2
+    assert ratio == 0.5
+
+
+def test_restrict_to_annotated_genes_no_unknowns():
+    gene_go = {"g1": {"GO:0001"}, "g2": {"GO:0001"}}
+    labeled_df = pd.DataFrame({"gene_id": ["g1", "g2"], "class": ["High", "Low"]})
+    result, n_unknown, ratio = restrict_to_annotated_genes(labeled_df, gene_go)
+    assert len(result) == 2
+    assert n_unknown == 0
+    assert ratio == 0.0
+
+
+def test_run_ora_raises_when_unknown_ratio_exceeds_threshold():
+    gene_go = {"g1": {"GO:0001"}}
+    labeled_df = pd.DataFrame({
+        "gene_id": ["g1", "g2", "g3", "g4", "g5"],  # 4/5 = 80% unknown
+        "class": ["High", "High", "Low", "Low", "Low"],
+    })
+    with pytest.raises(ValueError):
+        run_ora(gene_go, labeled_df, unknown_ratio_thresh=0.2)
+
+
+def test_run_ora_proceeds_when_unknown_ratio_below_threshold():
+    gene_go = {"g1": {"GO:0001"}}
+    labeled_df = pd.DataFrame({
+        "gene_id": ["g1", "g2", "g3", "g4", "g5"],  # same 80% unknown
+        "class": ["High", "High", "Low", "Low", "Low"],
+    })
+    # should NOT raise, since 0.9 threshold tolerates 80% unknown
+    result = run_ora(gene_go, labeled_df, unknown_ratio_thresh=0.9)
+    assert isinstance(result, pd.DataFrame)
+
+
+def test_run_ora_excludes_unknown_genes_from_population_denominator():
+    # 2 genes annotated (g1, g2), 8 genes unknown -- unknown_ratio=0.8, use lenient thresh
+    gene_go = {"g1": {"GO:0001"}, "g2": {}}
+    labeled_df = pd.DataFrame({
+        "gene_id": ["g1", "g2"] + [f"unk{i}" for i in range(8)],
+        "class": ["High", "Low"] + [None] * 8,
+    })
+    result = run_ora(gene_go, labeled_df, unknown_ratio_thresh=0.9)
+    # population count for GO:0001 must be based on the 2 ANNOTATED genes only,
+    # not all 10 -- i.e. population should be 1 (only g1 has the term), not diluted
+    row = result[result["go_id"] == "GO:0001"].iloc[0]
+    assert row["population"] == 1
