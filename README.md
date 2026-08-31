@@ -7,12 +7,48 @@ It exposes three independent, composable stages: determine an eligible
 population, assign a class label, run the enrichment test. The same tested
 engine can serve any labeling question, on any organism with a GO-annotated
 reference, without touching the core code. Chlamydomonas is used throughout
-this repo as a worked example only (see section 7), the tool itself is meant
+this repo as a worked example only (see section 8), the tool itself is meant
 to generalize to a different condition on the same species, a different
 species entirely, or a different kind of labeling question altogether.
 
 Data and results are deliberately kept out of this repository entirely, see
 section 3.
+
+---
+
+## Quick start
+
+Install the environment:
+
+```bash
+conda env create -f environment.yml
+conda activate go-gsea
+```
+
+Run the test suite, to confirm everything imports and works on your machine:
+
+```bash
+pytest tests/ -v
+```
+
+Minimal example run. This assumes a `.godb` already built from
+`reference/build_godb.py` (see section 5) and a gene-level input table
+matching section 2's required shape:
+
+```bash
+python scripts/run_pipeline.py \
+    --input-table path/to/your_gene_table.tsv.gz \
+    --godb path/to/your.godb.pkl \
+    --metric-col your_metric_column \
+    --label-strategy rank_tail --pct 10 \
+    --output-dir results/GO \
+    --dataset-name your_run_name
+```
+
+This writes `summary.your_run_name.all.tsv` (every GO term tested) and, for
+each class with any significant term, `summary.your_run_name.<class>.over.tsv`
+and `.under.tsv` into `results/GO/`. See section 6 for the full flag
+reference, and section 8 for a complete, real, worked run on real data.
 
 ---
 
@@ -40,11 +76,11 @@ What's different, deliberately:
 - **Every numeric piece has a test**, written against small, hand-checkable
   synthetic data before ever touching real biology. This caught several real
   bugs during development that would otherwise have silently corrupted
-  results (see section 6).
+  results (see section 7).
 - **The GO annotation source is a per-application decision, not a hardcoded
   default.** Which source is correctly ID-matched to a given reference genome
   varies by organism and even by strain/assembly version within the same
-  organism, see section 4 and the worked example in section 7.
+  organism, see section 4 and the worked example in section 8.
 - **One CLI runs both full-GO and GO-slim in a single call**, writing to
   separate output directories, instead of two duplicated batch files.
 
@@ -105,7 +141,7 @@ go-gsea/
 ├── filters/             Stage A: population-eligibility filters
 ├── labelers/             Stage B: class-assignment strategies
 ├── enrichment/             statistical engine (ORA) plus output writing
-├── scripts/                 CLI entry point: run_pipeline.py
+├── scripts/                 CLI entry point: run_pipeline.py (section 6)
 ├── notebooks/                 exploration only, never writes results here
 ├── tests/                       one test file per module
 ├── docs/
@@ -151,7 +187,7 @@ about.
   `enrichment.ora.restrict_to_annotated_genes()` drops genes with zero GO
   annotation from the population before any counting happens, matching the
   precedent's own `population_list` construction. Skipping this step was an
-  actual bug caught during development (see section 6), it silently
+  actual bug caught during development (see section 7), it silently
   inflated every population/expected-count denominator with genes that
   could never contribute to any term's count.
 - **Both `is_a` and `part_of` relationships must be propagated for correct
@@ -206,7 +242,7 @@ about.
   causing a large, silent ID mismatch. The correct source is whichever
   file's gene ID namespace was built from the same reference genome release
   the rest of the analysis uses, confirmed by direct ID-overlap testing, not
-  assumed. See the worked example in section 7 for how this played out for
+  assumed. See the worked example in section 8 for how this played out for
   one real case, including a same-species crosswalk file that turned out
   not to bridge two assembly versions once actually checked.
 - **An unknown-gene-ratio guard should exist, but its threshold is a
@@ -268,7 +304,7 @@ flowchart TD
     C1 --> F1
     C2 --> F1
     F7 --> H[("results/GO/ and results/GO_slim/<br/>summary.*.all.tsv,<br/>summary.*.<class>.over/under.tsv")]
-    S["scripts/run_pipeline.py<br/>(single CLI, ties everything above together)"]
+    S["scripts/run_pipeline.py<br/>(single CLI, ties everything above together,<br/>see section 6)"]
 
     classDef refNode fill:#9CC3D5,stroke:#0F2A3D,stroke-width:2px,color:#0F2A3D,font-weight:bold;
     classDef filtNode fill:#E39A5D,stroke:#5C2E12,stroke-width:2px,color:#3A1D0C,font-weight:bold;
@@ -292,16 +328,61 @@ flowchart TD
     linkStyle default stroke:#CCCCCC,stroke-width:1.5px;
 ```
 
-Every module in this diagram is real, tested code, see section 6 for test
+Every module in this diagram is real, tested code, see section 7 for test
 counts, except `reference/build_godb.py` which is verified against real
-data instead (also section 6). Nothing in `filters/` or `labelers/` knows
+data instead (also section 7). Nothing in `filters/` or `labelers/` knows
 what any specific metric or species means, that knowledge lives entirely
-in whatever calls them, currently `scripts/run_pipeline.py` (see section
-7 for a real invocation) or a hand-written script.
+in whatever calls them, currently `scripts/run_pipeline.py` (section 6) or
+a hand-written script.
 
 ---
 
-## 6. Testing status
+## 6. CLI reference
+
+`scripts/run_pipeline.py` is the single entry point tying `reference/`,
+`filters/`, `labelers/`, and `enrichment/` together. It knows nothing
+about any specific species or metric, every organism- or question-specific
+detail below is a flag, not a hardcoded assumption.
+
+**Input and reference:**
+
+| Flag | Required | Meaning |
+|---|---|---|
+| `--input-table` | yes | Path to a gene-level TSV, plain or `.gz` (see section 2) |
+| `--godb` | yes | Path to a cached full `.godb` from `reference/build_godb.py` |
+| `--slim-godb` | no | Path to a cached slim `.godb`. If given, also runs GO-slim enrichment |
+| `--id-col` | no, default `gene_id` | Gene ID column name in the input table |
+| `--strip-id-suffix` | no | Regex stripped from gene IDs before matching against the godb (for example a trailing version suffix) |
+| `--exclude-id` | no, repeatable | Gene ID(s) to drop before labeling (for example a spike-in control) |
+
+**Labeling (Stage B, see `labelers/labelers.py`):**
+
+| Flag | Meaning |
+|---|---|
+| `--metric-col` | Required. Column in the input table to label genes by |
+| `--label-strategy` | Required. One of `rank_tail`, `explicit_threshold`, `boolean_flag`, `cluster` |
+| `--pct` | Used by `rank_tail`. Percent for each tail, default 10 |
+| `--high-thresh`, `--low-thresh` | Used by `explicit_threshold` |
+| `--n-clusters` | Used by `cluster` |
+
+**Enrichment and output:**
+
+| Flag | Meaning |
+|---|---|
+| `--output-dir` | Required. Where full-GO results are written |
+| `--slim-output-dir` | Required if `--slim-godb` is given. Where GO-slim results are written |
+| `--dataset-name` | Required. Used to name output files, for example `summary.<dataset_name>.all.tsv` |
+| `--unknown-ratio-thresh` | Default 0.9. Raises an error above this fraction of unrecognized gene IDs (see section 4) |
+| `--thresh-type` | `p` or `q`, default `p` (see section 4 for why) |
+| `--thresh` | Default 0.01 |
+
+A complete real invocation, with both full-GO and GO-slim, is shown in
+`docs/examples/chlamydomonas.md` (section 8), along with confirmation that
+it reproduces the exact same numbers as an independent hand-written run.
+
+---
+
+## 7. Testing status
 
 Every numeric module has synthetic-data tests, run via `pytest` (repo root
 needs `pythonpath = .` in `pytest.ini` for imports to resolve, already
@@ -313,16 +394,16 @@ configured).
 | `labelers/labelers.py` | 8 | `cluster()`'s Yeo-Johnson step returns a `(array, lambda)` tuple from `scipy`, not just an array, caught here, not in production |
 | `enrichment/ora.py` | 23 | Includes the `restrict_to_annotated_genes` population-correctness fix, verified with a dedicated test that a term's `population` count reflects only annotated genes, not the full input |
 | `enrichment/output.py` | 5 | Covers the all/over/under file split, that empty over or under files are skipped rather than written empty, and that a missing output directory is created rather than erroring |
-| `reference/build_godb.py` | Not unit-tested; verified against real data instead (see section 7) | Both the `is_a`/`part_of` propagation gap and the slim intersection's subset property were caught and confirmed via direct interactive verification, not a formal test suite |
+| `reference/build_godb.py` | Not unit-tested; verified against real data instead (see section 8) | Both the `is_a`/`part_of` propagation gap and the slim intersection's subset property were caught and confirmed via direct interactive verification, not a formal test suite |
 
 All 43 automated tests pass as of the last real-data integration run.
 `scripts/run_pipeline.py` has no dedicated tests of its own, it is
 verified by reproducing exact numbers from an independent hand-written
-run (see section 7).
+run (see section 8).
 
 ---
 
-## 7. Worked examples
+## 8. Worked examples
 
 Real, end-to-end applications of this pipeline, showing how the general
 principles in section 4 play out for a specific organism, dataset, and
@@ -345,7 +426,7 @@ choices without altering the general principles in section 4.
 
 ---
 
-## 8. Known limitations and open items
+## 9. Known limitations and open items
 
 - **Ortholog-transfer GO supplementation is designed, not built.** For
   organisms or genes with sparse direct GO annotation, transferring GO
@@ -362,11 +443,13 @@ choices without altering the general principles in section 4.
   without this footer.
 - **`scripts/run_pipeline.py` has no automated tests of its own.** It is
   verified only by matching an independent hand-written run's numbers
-  exactly (see section 7), not by a dedicated test file the way every
+  exactly (see section 8), not by a dedicated test file the way every
   other module is.
 - **Only `PR_gene` (gene-level PR) has been run against real data.** `TPM`
   and transcript- or variant-level PR are unexercised, and the tool has
   not yet been run on a second species.
+- **No license file.** Worth adding before treating this as a finished
+  public repository.
 - **Commit history is intentionally terse.** This README (and the worked
   examples it links to), not the commit log, is the authoritative record
   of what changed and why.

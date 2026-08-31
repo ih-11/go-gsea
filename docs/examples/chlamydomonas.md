@@ -168,8 +168,8 @@ analyzed set.
 
 ## Reproducing this run
 
-Through the CLI (`scripts/run_pipeline.py`), both full-GO and GO-slim in
-one call:
+Through the CLI (`scripts/run_pipeline.py`, full flag reference in the main
+README section 6), both full-GO and GO-slim in one call:
 
 ```
 python scripts/run_pipeline.py \
@@ -199,5 +199,5 @@ library functions directly, before `scripts/run_pipeline.py` existed.
   fraction bare `TPM` represents in `gene_data.tsv.gz` was never fully
   confirmed) and transcript- or variant-level PR are unexercised.
 - Ortholog-transfer supplementation and provenance-stamped output files
-  are still open across the whole tool (main README section 8), nothing
+  are still open across the whole tool (main README section 9), nothing
   here is Chlamydomonas-specific about those gaps.
