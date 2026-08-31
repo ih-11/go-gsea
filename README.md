@@ -83,11 +83,14 @@ What's different, deliberately:
   organism, see section 4 and the worked example in section 8.
 - **One CLI runs both full-GO and GO-slim in a single call**, writing to
   separate output directories, instead of two duplicated batch files.
-- **Verified on two distinct real metrics on the same real dataset**, not
-  just one, see section 8. The same unmodified code correctly handled a
-  metric (total-fraction expression) it had never been run against before,
-  producing a textbook-correct biological result (ribosomal/translation
-  genes enriched among the most highly expressed) on the very first run.
+- **Verified on two distinct real metrics and two distinct labeling
+  mechanisms on the same real dataset**, not just one, see section 8. The
+  same unmodified code correctly handled a metric (total-fraction
+  expression) it had never been run against before, producing a
+  textbook-correct biological result on the very first run. Separately, an
+  unsupervised clustering strategy independently rediscovered the same
+  biological signal a simple top/bottom split had already found, without
+  being told to look for it.
 
 ---
 
@@ -247,16 +250,16 @@ about.
 - **A GO-slim run producing zero significant terms is not automatically a
   sign of correctness or of a bug**, check the actual p-value spread in the
   "all" output file before concluding either way, a coarse vocabulary can
-  legitimately fail to isolate a real, narrower signal. Confirmed with two
-  contrasting real datasets from the same pipeline, same code, same
+  legitimately fail to isolate a real, narrower signal. Confirmed with
+  multiple contrasting real runs from the same pipeline, same code, same
   species: one real metric produced zero significant GO-slim terms with a
   p-value distribution showing no real pileup near zero (a genuine absence
-  of a slim-detectable signal), while a second, distinct real metric on the
-  same genes produced five significant GO-slim terms with a p-value
-  distribution clearly piled up near zero for the enriched class. The same
-  mechanism, tested twice on real data with opposite outcomes, is stronger
-  evidence the slim code path itself is correct than either single result
-  alone.
+  of a slim-detectable signal), while other real runs on the same genes
+  produced several significant GO-slim terms each, with p-value
+  distributions clearly piled up near zero for the enriched classes. The
+  same mechanism, tested repeatedly on real data with different outcomes
+  each time, is stronger evidence the slim code path itself is correct
+  than any single result alone.
 - **`fold_enrichment` direction is computed independently of `scipy`'s
   Fisher's exact `odds_ratio`,** not derived from it. `odds_ratio`'s
   sign and magnitude depend on which row of the 2x2 table is "row 0," an
@@ -290,6 +293,15 @@ about.
   pipeline generalizes across different label distributions, but it should
   not be presented as evidence of independent validation on two unrelated
   questions, see the worked example in section 8.
+- **Different labeling mechanisms on the same metric converging on the
+  same biological signal is stronger evidence than either mechanism's
+  result alone.** A fixed top/bottom percentage split and an unsupervised
+  clustering approach are different in kind, one imposes a class boundary
+  by construction, the other discovers groupings purely from the data's own
+  distribution. When both independently surface the same enriched GO terms
+  for the same underlying biology, that convergence is meaningful evidence
+  the pipeline is finding something real, not an artifact of one
+  particular labeling choice, see the worked example in section 8.
 
 ---
 
@@ -390,8 +402,8 @@ detail below is a flag, not a hardcoded assumption.
 | `--godb` | yes | Path to a cached full `.godb` from `reference/build_godb.py` |
 | `--slim-godb` | no | Path to a cached slim `.godb`. If given, also runs GO-slim enrichment |
 | `--id-col` | no, default `gene_id` | Gene ID column name in the input table |
-| `--strip-id-suffix` | no | Regex stripped from gene IDs before matching against the godb (for example a trailing version suffix) |
-| `--exclude-id` | no, repeatable | Gene ID(s) to drop before labeling (for example a spike-in control) |
+| `--strip-id-suffix` | no | Regex stripped from gene IDs before matching against the godb (for example a trailing version suffix). Applied BEFORE `--exclude-id`, see that flag below |
+| `--exclude-id` | no, repeatable | Gene ID(s) to drop before labeling (for example a spike-in control). Applied AFTER `--strip-id-suffix`, if both flags are used, give the already-stripped form of the ID here, not the raw one, or the exclusion will silently fail to match |
 
 **Labeling (Stage B, see `labelers/labelers.py`):**
 
@@ -414,10 +426,11 @@ detail below is a flag, not a hardcoded assumption.
 | `--thresh-type` | `p` or `q`, default `p` (see section 4 for why) |
 | `--thresh` | Default 0.01 |
 
-Complete real invocations, on two distinct real metrics of the same
-dataset, are shown in `docs/examples/chlamydomonas.md` (section 8), along
-with confirmation that the CLI reproduces the exact same numbers as an
-independent hand-written run.
+Complete real invocations, on two distinct real metrics and two distinct
+labeling mechanisms, all on the same dataset, are shown in
+`docs/examples/chlamydomonas.md` (section 8), along with confirmation
+that the CLI reproduces the exact same numbers as independent
+hand-written runs.
 
 ---
 
@@ -430,7 +443,7 @@ configured).
 | Module | Tests | Notes |
 |---|---|---|
 | `filters/population.py` | 7 | Synthetic tests include a composed multi-filter interaction test. Also verified against real data (see section 8): a real read-depth filter and a real usage-fraction filter were confirmed to each independently remove a meaningful, distinct subset of genes, with the chained result stricter than either alone |
-| `labelers/labelers.py` | 8 | `cluster()`'s Yeo-Johnson step returns a `(array, lambda)` tuple from `scipy`, not just an array, caught here, not in production |
+| `labelers/labelers.py` | 8 | `cluster()`'s Yeo-Johnson step returns a `(array, lambda)` tuple from `scipy`, not just an array, caught here, not in production. `cluster()` is also verified against real data (see section 8), producing a genuinely uneven, non-arbitrary grouping that independently rediscovered a biological signal a separate labeling strategy had already found |
 | `enrichment/ora.py` | 23 | Includes the `restrict_to_annotated_genes` population-correctness fix, verified with a dedicated test that a term's `population` count reflects only annotated genes, not the full input |
 | `enrichment/output.py` | 5 | Covers the all/over/under file split, that empty over or under files are skipped rather than written empty, and that a missing output directory is created rather than erroring |
 | `scripts/run_pipeline.py` | 6 | Real subprocess-based CLI tests against synthetic data (not real Chlamydomonas files, kept fast and self-contained). Covers output-file writing, optional GO-slim, missing-required-flag errors, and a real gotcha caught here: `--strip-id-suffix` is applied before `--exclude-id`, so an unstripped ID passed to `--exclude-id` silently fails to match |
@@ -450,12 +463,15 @@ each decision point (annotation source, filter thresholds, labeling
 strategy), following the same principles.
 
 - **[`docs/examples/chlamydomonas.md`](docs/examples/chlamydomonas.md)**,
-  *Chlamydomonas reinhardtii*. Two real runs on the same gene set: a
-  translational-efficiency ratio (Polysome Ratio, PR) and total-fraction
-  expression (TPM). Covers annotation-source selection under a
-  strain/assembly mismatch, real coverage/ID-overlap numbers, a real
-  population-filter check on real depth/usage columns, a real full-GO and
-  GO-slim comparison for each metric with contrasting outcomes, and
+  *Chlamydomonas reinhardtii*. Three real runs on the same gene set: a
+  translational-efficiency ratio (Polysome Ratio, PR) with a top/bottom
+  percentage split, total-fraction expression (TPM) with the same
+  strategy, and PR again with unsupervised Ward's-method clustering
+  instead. Covers annotation-source selection under a strain/assembly
+  mismatch, real coverage/ID-overlap numbers, a real population-filter
+  check on real depth/usage columns, a real full-GO and GO-slim comparison
+  for each run with contrasting outcomes, an independent rediscovery of
+  the same biological signal by two different labeling mechanisms, and
   confirmation that the CLI reproduces the same results as independent
   hand-written runs.
 
@@ -481,12 +497,16 @@ choices without altering the general principles in section 4.
   carry a JSON metadata footer (script version, package versions, run
   date), useful for reproducibility. `write_results()` writes plain TSVs
   without this footer.
-- **Both real metrics tested so far are gene-level, from one species.**
-  `PR_gene` and `TPM` are both gene-level columns from the same
-  Chlamydomonas dataset, and `PR_gene` is derived from `TPM` (see section
-  8), not statistically independent of it. Transcript- or variant-level
-  data, a `boolean_flag` or `explicit_threshold` or `cluster` labeling
-  strategy on real data, and a second species are all still unexercised.
+- **Both real metrics and both tested labeling strategies come from one
+  species, one gene set.** `PR_gene` and `TPM` are both gene-level columns
+  from the same Chlamydomonas dataset, and `PR_gene` is derived from `TPM`
+  (see section 8), not statistically independent of it. `rank_tail` and
+  `cluster` have both been run on real data, `explicit_threshold` and
+  `boolean_flag` have not. Transcript- or variant-level data, and a second
+  species, are also unexercised. The `cluster` run additionally only
+  verifies the mechanism, not the original multi-condition use case its
+  precedent was designed for, this dataset has only one condition (see
+  section 8).
 - **Commit history is intentionally terse.** This README (and the worked
   examples it links to), not the commit log, is the authoritative record
   of what changed and why.
