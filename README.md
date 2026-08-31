@@ -433,12 +433,10 @@ configured).
 | `labelers/labelers.py` | 8 | `cluster()`'s Yeo-Johnson step returns a `(array, lambda)` tuple from `scipy`, not just an array, caught here, not in production |
 | `enrichment/ora.py` | 23 | Includes the `restrict_to_annotated_genes` population-correctness fix, verified with a dedicated test that a term's `population` count reflects only annotated genes, not the full input |
 | `enrichment/output.py` | 5 | Covers the all/over/under file split, that empty over or under files are skipped rather than written empty, and that a missing output directory is created rather than erroring |
+| `scripts/run_pipeline.py` | 6 | Real subprocess-based CLI tests against synthetic data (not real Chlamydomonas files, kept fast and self-contained). Covers output-file writing, optional GO-slim, missing-required-flag errors, and a real gotcha caught here: `--strip-id-suffix` is applied before `--exclude-id`, so an unstripped ID passed to `--exclude-id` silently fails to match |
 | `reference/build_godb.py` | Not unit-tested; verified against real data instead (see section 8) | Both the `is_a`/`part_of` propagation gap and the slim intersection's subset property were caught and confirmed via direct interactive verification, not a formal test suite |
 
-All 43 automated tests pass as of the last real-data integration run.
-`scripts/run_pipeline.py` has no dedicated tests of its own, it is
-verified by reproducing exact numbers from an independent hand-written
-run, on two distinct real metrics (see section 8).
+All 49 automated tests pass as of the last real-data integration run.
 
 ---
 
@@ -483,10 +481,6 @@ choices without altering the general principles in section 4.
   carry a JSON metadata footer (script version, package versions, run
   date), useful for reproducibility. `write_results()` writes plain TSVs
   without this footer.
-- **`scripts/run_pipeline.py` has no automated tests of its own.** It is
-  verified only by matching independent hand-written runs' numbers exactly
-  (see section 8), not by a dedicated test file the way every other
-  module is.
 - **Both real metrics tested so far are gene-level, from one species.**
   `PR_gene` and `TPM` are both gene-level columns from the same
   Chlamydomonas dataset, and `PR_gene` is derived from `TPM` (see section
