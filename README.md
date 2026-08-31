@@ -45,6 +45,8 @@ What's different, deliberately:
   default.** Which source is correctly ID-matched to a given reference genome
   varies by organism and even by strain/assembly version within the same
   organism, see section 4 and the worked example in section 7.
+- **One CLI runs both full-GO and GO-slim in a single call**, writing to
+  separate output directories, instead of two duplicated batch files.
 
 ---
 
@@ -98,11 +100,12 @@ go-gsea/
 ├── README.md
 ├── environment.yml
 ├── pytest.ini
-├── reference/          species-agnostic GO database construction
+├── reference/          species-agnostic GO database construction,
+│                        including the full-GO and GO-slim builders
 ├── filters/             Stage A: population-eligibility filters
 ├── labelers/             Stage B: class-assignment strategies
-├── enrichment/             statistical engine (ORA)
-├── scripts/                 CLI entry points (not yet built, see section 8)
+├── enrichment/             statistical engine (ORA) plus output writing
+├── scripts/                 CLI entry point: run_pipeline.py
 ├── notebooks/                 exploration only, never writes results here
 ├── tests/                       one test file per module
 ├── docs/
@@ -117,10 +120,12 @@ go-gsea/
 <confidential project folder>/
 ├── data/
 │   ├── raw/                     copies of input gene-level tables
-│   └── go_reference/             go-basic.obo, GO annotation source, cached .godb
+│   └── go_reference/             go-basic.obo, a GO-slim obo, the GO
+│                                  annotation source, and the cached
+│                                  full and slim .godb files
 └── results/
     ├── GO/                        full-GO enrichment output
-    └── GO_slim/                    GO-slim enrichment output (not yet implemented)
+    └── GO_slim/                    GO-slim enrichment output
 ```
 
 `.gitignore` excludes both symlink targets by name, with no trailing slash.
@@ -157,6 +162,14 @@ about.
   combining both, verified against real terms with confirmed `part_of`
   edges. This applies to any OBO-format ontology, not a species-specific
   concern.
+- **GO-slim is a filter on top of full-GO propagation, not a separate
+  propagation pass.** `reference/build_godb.py`'s `build_slim_godb()` takes
+  the already fully-propagated gene to GO term map and intersects it
+  against whichever terms exist in a slim ontology (206 terms in
+  `goslim_generic.obo`, versus 41,378 in the full ontology). Verified on
+  real data with a direct subset check: every gene's slim term set must be
+  a strict subset of that same gene's full term set, confirmed with zero
+  violations across 2,100 genes before this was trusted.
 - **Significance threshold: p < 0.01, uncorrected, is the default, not
   BH-corrected q-value.** Standard multiple-testing practice would suggest
   q-value/FDR correction. The precedent lab's own documented reasoning: GO
@@ -173,7 +186,11 @@ about.
   Language constraint that follows from the same reasoning: results at this
   threshold should be described as genes that "tended to include" a GO
   term, not as "statistically significant" findings, since no
-  multiple-testing correction is applied.
+  multiple-testing correction is applied. A GO-slim run producing zero
+  significant terms is not automatically a sign of correctness or of a
+  bug, check the actual p-value spread in the "all" output file before
+  concluding either way, a coarse vocabulary can legitimately fail to
+  isolate a real, narrower signal.
 - **`fold_enrichment` direction is computed independently of `scipy`'s
   Fisher's exact `odds_ratio`,** not derived from it. `odds_ratio`'s
   sign and magnitude depend on which row of the 2x2 table is "row 0," an
@@ -209,7 +226,10 @@ flowchart TD
     subgraph REF["reference/ -- species-agnostic GO database"]
         A1[go-basic.obo] --> B1[build_godb.py]
         A2["GO annotation source<br/>(GAF, or a native annotation file<br/>matching the reference genome)"] --> B1
-        B1 -->|"is_a + relationship['part_of']<br/>propagation"| C1[("cached .godb<br/>gene_id -> full GO term set")]
+        B1 -->|"is_a + relationship['part_of']<br/>propagation"| C1[("cached full .godb<br/>gene_id -> full GO term set")]
+        A3["slim ontology<br/>(e.g. goslim_generic.obo)"] --> B2[build_slim_godb]
+        C1 --> B2
+        B2 -->|"intersect with slim<br/>term set"| C2[("cached slim .godb")]
     end
 
     subgraph FILT["filters/ -- Stage A: population eligibility"]
@@ -239,25 +259,30 @@ flowchart TD
         F3 --> F5
         F5 --> F6[run_ora]
         F4 --> F6
+        F6 --> F7[write_results]
     end
 
     G[("Raw gene-level table<br/>any species, any metric")] --> D4
     D4 -->|eligible population| LAB
     LAB -->|"labeled_df<br/>(gene_id, class)"| F1
     C1 --> F1
-    F6 --> H[("results table<br/>go_id, class, population,<br/>observed, expected,<br/>fold_enrichment, p, q, significance")]
+    C2 --> F1
+    F7 --> H[("results/GO/ and results/GO_slim/<br/>summary.*.all.tsv,<br/>summary.*.<class>.over/under.tsv")]
+    S["scripts/run_pipeline.py<br/>(single CLI, ties everything above together)"]
 
     classDef refNode fill:#9CC3D5,stroke:#0F2A3D,stroke-width:2px,color:#0F2A3D,font-weight:bold;
     classDef filtNode fill:#E39A5D,stroke:#5C2E12,stroke-width:2px,color:#3A1D0C,font-weight:bold;
     classDef labNode fill:#E8D3A0,stroke:#6B5527,stroke-width:2px,color:#3A2E12,font-weight:bold;
     classDef oraNode fill:#B7BE8D,stroke:#4A4D2E,stroke-width:2px,color:#2C2E1B,font-weight:bold;
     classDef dataNode fill:#D97B3F,stroke:#5C2E12,stroke-width:3px,color:#FFFFFF,font-weight:bold;
+    classDef cliNode fill:#3A1D0C,stroke:#E39A5D,stroke-width:2px,color:#FFFFFF,font-weight:bold;
 
-    class A1,A2,B1,C1 refNode;
+    class A1,A2,A3,B1,B2,C1,C2 refNode;
     class D1,D2,D3,D4 filtNode;
     class E1,E2,E3,E4 labNode;
-    class F1,F2,F3,F4,F5,F6 oraNode;
+    class F1,F2,F3,F4,F5,F6,F7 oraNode;
     class G,H dataNode;
+    class S cliNode;
 
     style REF fill:#1B3A52,stroke:#9CC3D5,stroke-width:2px,color:#FFFFFF;
     style FILT fill:#5C2E12,stroke:#E39A5D,stroke-width:2px,color:#FFFFFF;
@@ -268,11 +293,11 @@ flowchart TD
 ```
 
 Every module in this diagram is real, tested code, see section 6 for test
-counts. Nothing in `filters/` or `labelers/` knows what any specific metric
-(expression, translation efficiency, a structural feature, anything else)
-or species means, that knowledge lives entirely in whatever script or
-notebook calls them. A CLI entry point (`scripts/run_pipeline.py`) tying
-this together generically is not yet built, see section 8.
+counts, except `reference/build_godb.py` which is verified against real
+data instead (also section 6). Nothing in `filters/` or `labelers/` knows
+what any specific metric or species means, that knowledge lives entirely
+in whatever calls them, currently `scripts/run_pipeline.py` (see section
+7 for a real invocation) or a hand-written script.
 
 ---
 
@@ -287,9 +312,13 @@ configured).
 | `filters/population.py` | 7 | Includes a composed multi-filter interaction test |
 | `labelers/labelers.py` | 8 | `cluster()`'s Yeo-Johnson step returns a `(array, lambda)` tuple from `scipy`, not just an array, caught here, not in production |
 | `enrichment/ora.py` | 23 | Includes the `restrict_to_annotated_genes` population-correctness fix, verified with a dedicated test that a term's `population` count reflects only annotated genes, not the full input |
-| `reference/build_godb.py` | Not unit-tested; verified against real data instead (see section 7's linked example) | The `is_a`/`part_of` propagation gap was caught via direct interactive verification against `go-basic.obo`, not a formal test suite |
+| `enrichment/output.py` | 5 | Covers the all/over/under file split, that empty over or under files are skipped rather than written empty, and that a missing output directory is created rather than erroring |
+| `reference/build_godb.py` | Not unit-tested; verified against real data instead (see section 7) | Both the `is_a`/`part_of` propagation gap and the slim intersection's subset property were caught and confirmed via direct interactive verification, not a formal test suite |
 
-All 38 automated tests pass as of the last real-data integration run.
+All 43 automated tests pass as of the last real-data integration run.
+`scripts/run_pipeline.py` has no dedicated tests of its own, it is
+verified by reproducing exact numbers from an independent hand-written
+run (see section 7).
 
 ---
 
@@ -306,7 +335,8 @@ strategy), following the same principles.
   *Chlamydomonas reinhardtii* polysome-ratio (PR) translational-efficiency
   analysis. First real end-to-end run of this pipeline: annotation-source
   selection under a strain/assembly mismatch, real coverage/ID-overlap
-  numbers, and the first biologically-interpreted real result.
+  numbers, a real full-GO and GO-slim comparison, and confirmation that
+  the CLI reproduces the same result as an independent hand-written run.
 
 Additional examples (a different condition on the same species, a different
 species entirely, a non-expression-based labeling strategy) belong here as
@@ -317,13 +347,6 @@ choices without altering the general principles in section 4.
 
 ## 8. Known limitations and open items
 
-- **No CLI entry point yet.** Every real run so far has been an ad hoc
-  interactive script, not `scripts/run_pipeline.py`. Reproducing a run
-  currently requires hand-writing Python against the library functions
-  directly.
-- **GO-slim is not implemented.** Prior precedent work ran full-GO and
-  GO-slim as a parallel pair for every dataset, this pipeline currently
-  only supports full-GO.
 - **Ortholog-transfer GO supplementation is designed, not built.** For
   organisms or genes with sparse direct GO annotation, transferring GO
   terms from a best-hit ortholog in a better-annotated species (using a
@@ -333,11 +356,17 @@ choices without altering the general principles in section 4.
 - **`gseapy` is an unused dependency.** Installed for a future ranked/GSEA
   mode (useful for continuous metrics, avoiding an arbitrary top/bottom
   cutoff entirely), but no code path uses it yet.
-- **No output-writing or provenance-stamping.** The precedent's output
-  files carry a JSON metadata footer (script version, package versions,
-  run date), useful for reproducibility, not yet replicated here. Results
-  currently only exist as an in-memory DataFrame from whatever script
-  produced them.
+- **No provenance-stamping on output files.** The precedent's output files
+  carry a JSON metadata footer (script version, package versions, run
+  date), useful for reproducibility. `write_results()` writes plain TSVs
+  without this footer.
+- **`scripts/run_pipeline.py` has no automated tests of its own.** It is
+  verified only by matching an independent hand-written run's numbers
+  exactly (see section 7), not by a dedicated test file the way every
+  other module is.
+- **Only `PR_gene` (gene-level PR) has been run against real data.** `TPM`
+  and transcript- or variant-level PR are unexercised, and the tool has
+  not yet been run on a second species.
 - **Commit history is intentionally terse.** This README (and the worked
   examples it links to), not the commit log, is the authoritative record
   of what changed and why.

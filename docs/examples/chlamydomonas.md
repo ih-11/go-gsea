@@ -1,343 +1,203 @@
-# go-gsea
+# Worked example: Chlamydomonas reinhardtii, polysome ratio (PR)
 
-A generic, species-agnostic GO over-representation analysis (ORA) pipeline.
-
-This tool is not built for one species, one condition, or one research question.
-It exposes three independent, composable stages: determine an eligible
-population, assign a class label, run the enrichment test. The same tested
-engine can serve any labeling question, on any organism with a GO-annotated
-reference, without touching the core code. Chlamydomonas is used throughout
-this repo as a worked example only (see section 7), the tool itself is meant
-to generalize to a different condition on the same species, a different
-species entirely, or a different kind of labeling question altogether.
-
-Data and results are deliberately kept out of this repository entirely, see
-section 3.
+The first real, end-to-end application of `go-gsea`. This document records
+the specific choices made for this species and dataset, and why, following
+the general principles in the main `README.md` (section 4), but making
+decisions a different organism, condition, or metric might reasonably make
+differently.
 
 ---
 
-## 1. Why this exists, and its relationship to prior work
+## Research question
 
-This project's statistical core is verified against a real, working precedent:
-S. Yamasaki's `create_go_annotation_db.py` / `stats_test_based_on_go.py`
-(`sy-scripts`), used in prior lab GO-enrichment work. The Fisher's exact test
-construction, the `log2((observed+1)/(expected+1))` fold-enrichment formula,
-the Benjamini-Hochberg correction, and the population-definition philosophy
-(background = the genes actually analyzable for a given question, never "all
-genes in the genome") were all confirmed against that precedent's source code
-and real output files before being reimplemented here.
+Translational efficiency (Polysome Ratio, PR, from `Project1_polysomelongread_PR`)
+compared between the top and bottom 10% of genes by `PR_gene`: which GO terms
+are over or under represented among the best and worst translated genes?
 
-What's different, deliberately:
+## Input data used
 
-- **Not tied to one container.** The original tools only run inside a specific
-  Singularity image. This pipeline runs in a plain conda environment.
-- **Class-label generation is a reusable, tested layer**, not one-off notebook
-  code rewritten by hand for every new research question. Every precedent
-  notebook inspected during design had its own one-off version of this logic
-  (a top/bottom-percent-by-rank cell, a clustering cell, a threshold-filter
-  cell), none of it reusable as a library, each rewritten from scratch per
-  question.
-- **Every numeric piece has a test**, written against small, hand-checkable
-  synthetic data before ever touching real biology. This caught several real
-  bugs during development that would otherwise have silently corrupted
-  results (see section 6).
-- **The GO annotation source is a per-application decision, not a hardcoded
-  default.** Which source is correctly ID-matched to a given reference genome
-  varies by organism and even by strain/assembly version within the same
-  organism, see section 4 and the worked example in section 7.
+A gene-level table, `CR_3D.PR.gene_data.tsv.gz`, produced by the upstream
+long-read pipeline described in the main README (section 2). Relevant
+columns for this run: `gene_id`, `PR_gene`. One row is excluded before
+labeling: the luciferase spike-in control (`gene:Standard-R-luc`), since it
+is a synthetic construct with no meaningful GO annotation.
 
----
+## GO annotation source: Phytozome, not UniProt-GOA
 
-## 2. Expected input data
+The obvious first choice for a UniProt-GOA-format GAF file for this species,
+`32602.C_reinhardtii_CC-503.goa`, from EBI's GOA proteomes index, turned out
+to be annotated against strain CC-503, on the older v5.6 genome assembly.
+This project's actual reference genome (and every gene ID in
+`gene_data.tsv.gz`) is strain CC-4532, assembly v6.1, a separately
+reassembled genome, confirmed from JGI's own documentation to share "close
+ancestry" with CC-503 but not be a renumbering of it. Using the CC-503 file
+risked a large, silent gene-ID mismatch.
 
-`go-gsea` does not read raw sequencing data, alignments, or annotation
-output directly. It expects a single, already-prepared, gene-level (or
-transcript-level, or any other feature-level) table as its starting point.
-Everything upstream of that table, producing it from raw reads, is a
-separate concern.
+Phytozome's own `CreinhardtiiCC_4532_707_v6.1.P14.annotation_info.txt.gz`
+(a per-gene functional annotation table, Pfam, Panther, KOG, KO, GO,
+best-hit orthologs, bundled with the same genome release the reference
+genome itself came from) uses the exact same gene ID namespace by
+construction. Confirmed directly: real gene IDs from `gene_data.tsv.gz`
+match this file's `locusName` column after stripping only a trailing
+`.vX.Y` version suffix (for example `Cre01.g000350_4532.v6.1` becomes
+`Cre01.g000350_4532`).
 
-**Required shape:**
+**Tradeoff accepted:** Phytozome's own GO column has substantially sparser
+coverage than UniProt-GOA (confirmed: about 19% of genes genome-wide, 3,203
+of about 17,700 loci). Phytozome's GO column is the direct output of their
+own annotation pipeline, not a GO-specialist resource layering in orthology
+transfer and electronic annotation the way UniProt-GOA does. Given the
+project's own methodology explicitly prioritizes population and ID
+correctness over raw coverage (main README section 4), this tradeoff was
+accepted deliberately rather than reaching for a larger but ID-mismatched
+source.
 
-- Plain or gzipped, tab-separated, one row per gene (or per feature, if
-  working at a different level).
-- One column of gene IDs. These IDs must be in the same namespace as
-  whichever GO annotation source `reference/build_godb.py` is built from
-  for that organism (for example, stripped of any version suffix the raw
-  gene ID carries, if the annotation source does not carry that suffix).
-  ID alignment is checked explicitly, not assumed, before any real run
-  (see section 4).
-- One or more numeric or categorical columns to be used as the labeling
-  metric (expression, a ratio like translational efficiency, a boolean
-  motif flag, or anything else). Which column is used, and how, is decided
-  entirely by the caller through `filters/` and `labelers/`, `go-gsea`
-  itself has no fixed expectation of what these columns are named or mean.
+**A same-species crosswalk was checked and ruled out.** Phytozome also
+ships `CreinhardtiiCC_4532_707_v6.1.synonym.txt`, which might plausibly
+have bridged CC-503-era IDs to CC-4532 IDs, making the UniProt-GOA file
+usable after all as a supplementary tier. Checked directly: every ID in
+this file is already `_4532`-suffixed, it is a gene-symbol and alias table
+(mapping v6.1 transcript IDs to gene symbols and pre-Phytozome internal
+gene-caller IDs like `g4.t1`), not a cross-assembly ID map. This path was
+dropped rather than left as an unverified assumption.
 
-**Where this table typically comes from:** the worked example in this repo
-(`docs/examples/chlamydomonas.md`) uses a gene-level table produced by a
-Nanopore full-length cDNA long-read RNA-seq processing pipeline
-(`Longread_pipeline`, a separate, species-agnostic wet-processing pipeline
-that turns raw FASTQ into an annotated per-gene/per-transcript table).
-`go-gsea` has no dependency on that pipeline and does not assume long-read
-data specifically, any tool that produces a compatible gene-level table
-(short-read RNA-seq, microarray, or anything else) is a valid input source.
-**If you need the upstream long-read processing pipeline itself, contact
-Ibnu Halim directly, it is a separate, not-yet-public repository.**
+**Designed but not built:** an ortholog-transfer supplement using
+Phytozome's `Best-hit-arabi-name` column (available in the same
+`annotation_info.txt` file) plus a donor `.godb` (for example Arabidopsis).
+For genes with zero direct Phytozome GO annotation, the idea is to
+transfer GO terms from the best-hit Arabidopsis ortholog, tagged with a
+distinct provenance (`ortholog_IEA`) so it is never conflated with direct
+annotation. Not yet implemented as reusable `go-gsea` code.
 
----
+## `is_a` and `part_of` propagation
 
-## 3. Repository and data structure
+Verified empirically against `go-basic.obo`, not assumed from
+documentation: `goatools.GODag.get_all_parents()` only follows `is_a`,
+even with `optional_attrs=["relationship"]` loaded. Confirmed via two real
+terms known to have no `part_of` edges (`GO:0006914` autophagy,
+`GO:0071456` cellular response to hypoxia, both returned an empty
+`part_of` set correctly) versus terms confirmed via raw grep of the OBO
+file to have real `part_of` edges (`GO:0000015`, `GO:0000027`, and others,
+both returned real parent IDs via `term.relationship["part_of"]`).
+`reference/build_godb.py`'s custom `get_all_ancestors()` walker was built
+and verified against this distinction.
 
-The code repository and the actual data/results are kept in two separate
-locations. Code is version-controlled and can be shared publicly. Data and
-results are confidential and stay off GitHub entirely.
+Sanity check on one real gene: `Cre01.g000650_4532` has 4 direct GO terms
+(copper ion binding, primary methylamine oxidase activity, amine metabolic
+process, quinone binding) leading to 19 terms after propagation, including
+both namespace roots and no unrelated terms, manually checked against
+`go-basic.obo`'s term names, not just trusted by count.
 
-**Code repository layout:**
+## GO-slim
+
+Built with `goslim_generic.obo` (206 terms), from
+`reference/build_godb.py`'s `build_and_cache_slim_godb()`, which intersects
+the already-propagated full-GO term set per gene against the slim
+vocabulary rather than re-propagating from scratch. 2,100 of the 3,203
+full-GO-annotated genes have at least one slim term (average 2.8 slim
+terms per gene, versus 16.3 full terms per gene). Verified with a direct
+subset check before trusting the result: every one of the 2,100 slim
+genes' term sets was confirmed to be a strict subset of that same gene's
+full term set, zero violations.
+
+## Real-data integration numbers
+
+- `build_godb.py` on the real Phytozome file: 3,203 annotated genes,
+  matching an independently predicted count from the raw file before any
+  code existed to build it.
+- `gene_data.tsv.gz`: 3,594 total genes (after dropping the luciferase
+  spike-in row and rows with missing `PR_gene`: 3,593).
+- ID overlap after `.vX.Y`-suffix normalization: 650 of 3,594 matched
+  (18.1%), consistent with the about-19% genome-wide Phytozome coverage
+  figure above, confirming the ID-matching logic is correct rather than
+  coincidentally non-crashing.
+- Unknown-gene ratio for this run: about 82% (2,943 of 3,593 unannotated
+  genes), a direct consequence of the coverage tradeoff above. `run_ora()`'s
+  `unknown_ratio_thresh` was set to `0.9` for this run (main README section
+  4 explains why this threshold is a tunable parameter, not a fixed
+  constant: two copies of the original precedent script disagreed on this
+  exact value, `0.2` versus `0.9`, and which was current was never
+  definitively resolved).
+
+## Labeling strategy used
+
+`labelers.rank_tail(df, col="PR_gene", pct=10)`: top and bottom 10% by
+`PR_gene`, matching the confirmed real-data convention from prior lab work
+on Arabidopsis and rice (`AT-T87-HS-PR.tsv` and similar files were
+confirmed to use exactly 10%/10% splits, not a median split). 359 genes in
+each of `High`/`Low`.
+
+## Result, and how to read it
+
+At `thresh_type="p", thresh=0.01`, full-GO:
+
+- **Low-PR (worst translated) genes:** enriched for cellular component and
+  organelle organization and assembly terms (`GO:0016043`, `GO:0022607`,
+  `GO:0071840`, `GO:0044085`, all p<0.01). Notably, `GO:0006412`
+  (translation) had zero observed genes in this group against an expected
+  about 5.05 (fold_enrichment = -2.60, p = 0.0103, just outside the p<0.01
+  cutoff). Core translation-machinery genes essentially never appearing
+  among the worst translated genes is the expected biological direction,
+  and a reassuring sign this is not a pipeline artifact.
+- **High-PR (best translated) genes:** `GO:0046982`/`GO:0046983` (protein
+  dimerization activity) over represented; `GO:0008152` (metabolic
+  process) under represented.
+
+**GO-slim, same labeled genes, same threshold:** 172 (class, term) rows
+tested (versus 2,334 for full-GO), 0 rows reaching p<0.01. Checked
+directly rather than assumed correct: the actual p-value spread in
+`summary.CR_3D.PR_gene.all.tsv` ranges from about 0.016 up through 1.0,
+not a suspicious wall of identical values, so this reflects a real
+absence of a slim-vocabulary-detectable signal at this threshold, not a
+broken computation. The closest term, `GO:0005694` (chromosome), sits at
+p = 0.021, fold_enrichment = 1.40. Plausible explanation: the 206-term
+slim vocabulary is coarse enough that the specific translation-machinery
+signal visible in full-GO (`GO:0006412`, itself only just outside the
+cutoff) does not survive being folded into a broader category.
+
+Per the main README's language-constraint principle, these are described
+as genes that tended to include these terms, not as statistically
+significant findings, since this threshold applies no multiple-testing
+correction.
+
+**Caveat to carry into any write-up using this result:** every full-GO
+number above is built on the about-19%-coverage Phytozome annotation
+layer, not a comprehensive one. A `GO:0006412` population of 49 genes is
+out of about 650 GO-annotated genes in this run, not the full 3,593-gene
+analyzed set.
+
+## Reproducing this run
+
+Through the CLI (`scripts/run_pipeline.py`), both full-GO and GO-slim in
+one call:
 
 ```
-go-gsea/
-├── README.md
-├── environment.yml
-├── pytest.ini
-├── reference/          species-agnostic GO database construction
-├── filters/             Stage A: population-eligibility filters
-├── labelers/             Stage B: class-assignment strategies
-├── enrichment/             statistical engine (ORA)
-├── scripts/                 CLI entry points (not yet built, see section 8)
-├── notebooks/                 exploration only, never writes results here
-├── tests/                       one test file per module
-├── docs/
-│   └── examples/                    worked examples, e.g. chlamydomonas.md
-├── data      -> (symlink to a confidential location, see below)
-└── results   -> (symlink to the same confidential location, see below)
+python scripts/run_pipeline.py \
+    --input-table /path/to/CR_3D.PR.gene_data.tsv.gz \
+    --godb data/go_reference/chlamy.godb.pkl \
+    --slim-godb data/go_reference/chlamy.slim.godb.pkl \
+    --metric-col PR_gene \
+    --id-col gene_id \
+    --strip-id-suffix '\.v\d+\.\d+$' \
+    --exclude-id 'gene:Standard-R-luc' \
+    --label-strategy rank_tail --pct 10 \
+    --output-dir results/GO \
+    --slim-output-dir results/GO_slim \
+    --dataset-name CR_3D.PR_gene \
+    --unknown-ratio-thresh 0.9 \
+    --thresh-type p --thresh 0.01
 ```
 
-**Confidential data/results location, pointed to by the two symlinks above:**
+Confirmed to reproduce the exact numbers above (359 High, 359 Low, 2,334
+full-GO rows tested, 7 significant, 172 slim rows tested, 0 significant)
+against an earlier, independent hand-written script that called the same
+library functions directly, before `scripts/run_pipeline.py` existed.
 
-```
-<confidential project folder>/
-├── data/
-│   ├── raw/                     copies of input gene-level tables
-│   └── go_reference/             go-basic.obo, GO annotation source, cached .godb
-└── results/
-    ├── GO/                        full-GO enrichment output
-    └── GO_slim/                    GO-slim enrichment output (not yet implemented)
-```
+## Open items specific to this example
 
-`.gitignore` excludes both symlink targets by name, with no trailing slash.
-A symlink pointing at a directory is not itself a directory as far as git's
-slash-suffixed ignore patterns are concerned, this was a real early mistake
-in this project, worth remembering.
-
----
-
-## 4. Design principles
-
-These are the parts of the earlier per-species decisions that generalize,
-true regardless of which organism, condition, or metric a given run is
-about.
-
-- **Population = every gene actually analyzable for that specific question,
-  never "all genes in the genome" or a population borrowed from a different
-  analysis.** A population that has already been filtered by some
-  detectability or depth criterion is, by construction, not a random sample
-  of the genome, comparing it against a raw genome-wide background creates
-  systematic, directional bias in the result, not just extra noise. This is
-  enforced mechanically, not just by convention:
-  `enrichment.ora.restrict_to_annotated_genes()` drops genes with zero GO
-  annotation from the population before any counting happens, matching the
-  precedent's own `population_list` construction. Skipping this step was an
-  actual bug caught during development (see section 6), it silently
-  inflated every population/expected-count denominator with genes that
-  could never contribute to any term's count.
-- **Both `is_a` and `part_of` relationships must be propagated for correct
-  GO term inheritance.** `goatools`'s own `GODag.get_all_parents()` was
-  empirically confirmed to only follow `is_a`, silently omitting `part_of`
-  edges even when `optional_attrs=["relationship"]` is loaded.
-  `reference/build_godb.py` implements its own `get_all_ancestors()` walker
-  combining both, verified against real terms with confirmed `part_of`
-  edges. This applies to any OBO-format ontology, not a species-specific
-  concern.
-- **Significance threshold: p < 0.01, uncorrected, is the default, not
-  BH-corrected q-value.** Standard multiple-testing practice would suggest
-  q-value/FDR correction. The precedent lab's own documented reasoning: GO
-  enrichment run repeatedly (once per class, or once per cluster) compounds
-  the multiple-testing problem beyond what standard FDR correction assumes;
-  GO terms have parent-child dependencies that violate the independence
-  assumption FDR correction relies on, so even a "corrected" q-value is not
-  fully accurate; and q-values are unstable across reruns for reasons
-  unrelated to the actual data under test (they shift with how many other
-  GO terms happen to be in the annotation file, or how many classes are
-  being compared), while p-values do not have this instability. Both p and
-  q are always computed and reported regardless of which is used as the
-  cutoff, `thresh_type`/`thresh` are run-time parameters, not hardcoded.
-  Language constraint that follows from the same reasoning: results at this
-  threshold should be described as genes that "tended to include" a GO
-  term, not as "statistically significant" findings, since no
-  multiple-testing correction is applied.
-- **`fold_enrichment` direction is computed independently of `scipy`'s
-  Fisher's exact `odds_ratio`,** not derived from it. `odds_ratio`'s
-  sign and magnitude depend on which row of the 2x2 table is "row 0," an
-  orientation-dependent convention that caused real test failures during
-  development. The precedent's own `log2((observed+1)/(expected+1))`
-  formula sidesteps this entirely and is more directly interpretable
-  regardless of table construction order.
-- **The GO annotation source must be chosen for correct gene-ID alignment
-  with the specific reference genome in use, never assumed generically.**
-  The obvious choice (a general-purpose GAF, for example from UniProt-GOA)
-  is not automatically correct: it may be built against a different strain
-  or assembly version than the actual reference genome a project uses,
-  causing a large, silent ID mismatch. The correct source is whichever
-  file's gene ID namespace was built from the same reference genome release
-  the rest of the analysis uses, confirmed by direct ID-overlap testing, not
-  assumed. See the worked example in section 7 for how this played out for
-  one real case, including a same-species crosswalk file that turned out
-  not to bridge two assembly versions once actually checked.
-- **An unknown-gene-ratio guard should exist, but its threshold is a
-  tunable parameter, not a fixed constant.** How much of a gene list is
-  expected to fall outside the chosen GO annotation source's coverage
-  varies enormously by species and by annotation source (a sparse,
-  high-ID-confidence source versus a broad, lower-confidence one).
-  `run_ora(..., unknown_ratio_thresh=...)` exposes this as an argument for
-  exactly this reason.
-
----
-
-## 5. Architecture
-
-```mermaid
-flowchart TD
-    subgraph REF["reference/ -- species-agnostic GO database"]
-        A1[go-basic.obo] --> B1[build_godb.py]
-        A2["GO annotation source<br/>(GAF, or a native annotation file<br/>matching the reference genome)"] --> B1
-        B1 -->|"is_a + relationship['part_of']<br/>propagation"| C1[("cached .godb<br/>gene_id -> full GO term set")]
-    end
-
-    subgraph FILT["filters/ -- Stage A: population eligibility"]
-        D1[read_depth_filter]
-        D2[usage_filter]
-        D3[min_group_size_filter]
-        D1 --> D4[chain_filters]
-        D2 --> D4
-        D3 --> D4
-    end
-
-    subgraph LAB["labelers/ -- Stage B: class assignment"]
-        E1["rank_tail<br/>top/bottom N%"]
-        E2[explicit_threshold]
-        E3[boolean_flag]
-        E4["cluster<br/>Yeo-Johnson + Ward's method"]
-    end
-
-    subgraph ORA["enrichment/ -- statistical engine"]
-        F1[restrict_to_annotated_genes]
-        F2[count_term_occurrences]
-        F3[fisher_exact_for_term]
-        F4[fold_enrichment]
-        F5[bh_correct]
-        F1 --> F2 --> F3
-        F2 --> F4
-        F3 --> F5
-        F5 --> F6[run_ora]
-        F4 --> F6
-    end
-
-    G[("Raw gene-level table<br/>any species, any metric")] --> D4
-    D4 -->|eligible population| LAB
-    LAB -->|"labeled_df<br/>(gene_id, class)"| F1
-    C1 --> F1
-    F6 --> H[("results table<br/>go_id, class, population,<br/>observed, expected,<br/>fold_enrichment, p, q, significance")]
-
-    classDef refNode fill:#9CC3D5,stroke:#0F2A3D,stroke-width:2px,color:#0F2A3D,font-weight:bold;
-    classDef filtNode fill:#E39A5D,stroke:#5C2E12,stroke-width:2px,color:#3A1D0C,font-weight:bold;
-    classDef labNode fill:#E8D3A0,stroke:#6B5527,stroke-width:2px,color:#3A2E12,font-weight:bold;
-    classDef oraNode fill:#B7BE8D,stroke:#4A4D2E,stroke-width:2px,color:#2C2E1B,font-weight:bold;
-    classDef dataNode fill:#D97B3F,stroke:#5C2E12,stroke-width:3px,color:#FFFFFF,font-weight:bold;
-
-    class A1,A2,B1,C1 refNode;
-    class D1,D2,D3,D4 filtNode;
-    class E1,E2,E3,E4 labNode;
-    class F1,F2,F3,F4,F5,F6 oraNode;
-    class G,H dataNode;
-
-    style REF fill:#1B3A52,stroke:#9CC3D5,stroke-width:2px,color:#FFFFFF;
-    style FILT fill:#5C2E12,stroke:#E39A5D,stroke-width:2px,color:#FFFFFF;
-    style LAB fill:#6B5527,stroke:#E8D3A0,stroke-width:2px,color:#FFFFFF;
-    style ORA fill:#4A4D2E,stroke:#B7BE8D,stroke-width:2px,color:#FFFFFF;
-
-    linkStyle default stroke:#CCCCCC,stroke-width:1.5px;
-```
-
-Every module in this diagram is real, tested code, see section 6 for test
-counts. Nothing in `filters/` or `labelers/` knows what any specific metric
-(expression, translation efficiency, a structural feature, anything else)
-or species means, that knowledge lives entirely in whatever script or
-notebook calls them. A CLI entry point (`scripts/run_pipeline.py`) tying
-this together generically is not yet built, see section 8.
-
----
-
-## 6. Testing status
-
-Every numeric module has synthetic-data tests, run via `pytest` (repo root
-needs `pythonpath = .` in `pytest.ini` for imports to resolve, already
-configured).
-
-| Module | Tests | Notes |
-|---|---|---|
-| `filters/population.py` | 7 | Includes a composed multi-filter interaction test |
-| `labelers/labelers.py` | 8 | `cluster()`'s Yeo-Johnson step returns a `(array, lambda)` tuple from `scipy`, not just an array, caught here, not in production |
-| `enrichment/ora.py` | 23 | Includes the `restrict_to_annotated_genes` population-correctness fix, verified with a dedicated test that a term's `population` count reflects only annotated genes, not the full input |
-| `reference/build_godb.py` | Not unit-tested; verified against real data instead (see section 7's linked example) | The `is_a`/`part_of` propagation gap was caught via direct interactive verification against `go-basic.obo`, not a formal test suite |
-
-All 38 automated tests pass as of the last real-data integration run.
-
----
-
-## 7. Worked examples
-
-Real, end-to-end applications of this pipeline, showing how the general
-principles in section 4 play out for a specific organism, dataset, and
-research question. These are examples, not specifications, a different
-organism, condition, or question may reasonably make different choices at
-each decision point (annotation source, filter thresholds, labeling
-strategy), following the same principles.
-
-- **[`docs/examples/chlamydomonas.md`](docs/examples/chlamydomonas.md)**,
-  *Chlamydomonas reinhardtii* polysome-ratio (PR) translational-efficiency
-  analysis. First real end-to-end run of this pipeline: annotation-source
-  selection under a strain/assembly mismatch, real coverage/ID-overlap
-  numbers, and the first biologically-interpreted real result.
-
-Additional examples (a different condition on the same species, a different
-species entirely, a non-expression-based labeling strategy) belong here as
-separate files as they are built, each documenting its own specific
-choices without altering the general principles in section 4.
-
----
-
-## 8. Known limitations and open items
-
-- **No CLI entry point yet.** Every real run so far has been an ad hoc
-  interactive script, not `scripts/run_pipeline.py`. Reproducing a run
-  currently requires hand-writing Python against the library functions
-  directly.
-- **GO-slim is not implemented.** Prior precedent work ran full-GO and
-  GO-slim as a parallel pair for every dataset, this pipeline currently
-  only supports full-GO.
-- **Ortholog-transfer GO supplementation is designed, not built.** For
-  organisms or genes with sparse direct GO annotation, transferring GO
-  terms from a best-hit ortholog in a better-annotated species (using a
-  donor `.godb`) is a documented option in the worked example but not yet
-  implemented as reusable code, and would need its own provenance tagging
-  so transferred annotations are never conflated with direct ones.
-- **`gseapy` is an unused dependency.** Installed for a future ranked/GSEA
-  mode (useful for continuous metrics, avoiding an arbitrary top/bottom
-  cutoff entirely), but no code path uses it yet.
-- **No output-writing or provenance-stamping.** The precedent's output
-  files carry a JSON metadata footer (script version, package versions,
-  run date), useful for reproducibility, not yet replicated here. Results
-  currently only exist as an in-memory DataFrame from whatever script
-  produced them.
-- **Commit history is intentionally terse.** This README (and the worked
-  examples it links to), not the commit log, is the authoritative record
-  of what changed and why.
+- Only `PR_gene` (gene-level PR) has been run. `TPM` and `PTPM` (which
+  fraction bare `TPM` represents in `gene_data.tsv.gz` was never fully
+  confirmed) and transcript- or variant-level PR are unexercised.
+- Ortholog-transfer supplementation and provenance-stamped output files
+  are still open across the whole tool (main README section 8), nothing
+  here is Chlamydomonas-specific about those gaps.
