@@ -53,6 +53,7 @@ def bh_correct(p_values):
     _, q_values, _, _ = multipletests(p_values, method="fdr_bh")
     return list(q_values)
 
+
 def count_term_occurrences(gene_go, gene_ids):
     """
     Given gene_go (dict[gene_id] -> set(GO_id), from a .godb) and a list of
@@ -65,19 +66,52 @@ def count_term_occurrences(gene_go, gene_ids):
             counts[term_id] = counts.get(term_id, 0) + 1
     return counts
 
+
+def restrict_to_annotated_genes(labeled_df, gene_go, id_col="gene_id"):
+    """
+    Matches stats_test_based_on_go.py's population_list construction: keeps
+    only rows whose gene_id has at least one entry in gene_go, since genes
+    with zero GO annotation can never contribute to any term's count and
+    must not inflate the population/class denominators.
+
+    Returns (filtered_df, n_unknown, unknown_ratio).
+    """
+    is_annotated = labeled_df[id_col].isin(gene_go.keys())
+    n_unknown = int((~is_annotated).sum())
+    unknown_ratio = n_unknown / len(labeled_df) if len(labeled_df) else 0.0
+    return labeled_df[is_annotated].copy(), n_unknown, unknown_ratio
+
+
 def run_ora(gene_go, labeled_df, id_col="gene_id", class_col="class",
-            thresh_type="p", thresh=0.01):
+            thresh_type="p", thresh=0.01, unknown_ratio_thresh=0.9):
     """
     Runs GO over-representation analysis for every class present in
     labeled_df's class_col, against the full labeled_df as population
     (matching the -c input format: every row is population, non-null
     class rows are also tested as a foreground group).
 
+    Genes with no entry in gene_go are dropped from the population BEFORE
+    any counting happens (matches stats_test_based_on_go.py's population_list
+    construction) -- otherwise every expected-count and Fisher's-exact
+    denominator would be inflated by genes that can never contribute to any
+    term's count, silently understating every real enrichment signal.
+
+    Raises ValueError if the unknown-gene ratio exceeds unknown_ratio_thresh.
+
     Returns a DataFrame with one row per (class, GO_term) tested, columns
     matching the real stats_test_based_on_go.py output: go_id, class,
     population, observed, expected, fold_enrichment, p_value, q_value,
     significance.
     """
+    labeled_df, n_unknown, unknown_ratio = restrict_to_annotated_genes(
+        labeled_df, gene_go, id_col
+    )
+    if unknown_ratio >= unknown_ratio_thresh:
+        raise ValueError(
+            f"Too many genes ({n_unknown}, {unknown_ratio:.1%}) have no GO "
+            f"annotation -- exceeds unknown_ratio_thresh={unknown_ratio_thresh:.1%}."
+        )
+
     population_ids = labeled_df[id_col].tolist()
     pop_counts = count_term_occurrences(gene_go, population_ids)
     n_pop_total = len(population_ids)
