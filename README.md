@@ -48,7 +48,7 @@ python scripts/run_pipeline.py \
 This writes `summary.your_run_name.all.tsv` (every GO term tested) and, for
 each class with any significant term, `summary.your_run_name.<class>.over.tsv`
 and `.under.tsv` into `results/GO/`. See section 6 for the full flag
-reference, and section 8 for a complete, real, worked run on real data.
+reference, and section 8 for complete, real, worked runs on real data.
 
 ---
 
@@ -83,6 +83,11 @@ What's different, deliberately:
   organism, see section 4 and the worked example in section 8.
 - **One CLI runs both full-GO and GO-slim in a single call**, writing to
   separate output directories, instead of two duplicated batch files.
+- **Verified on two distinct real metrics on the same real dataset**, not
+  just one, see section 8. The same unmodified code correctly handled a
+  metric (total-fraction expression) it had never been run against before,
+  producing a textbook-correct biological result (ribosomal/translation
+  genes enriched among the most highly expressed) on the very first run.
 
 ---
 
@@ -109,6 +114,11 @@ separate concern.
   motif flag, or anything else). Which column is used, and how, is decided
   entirely by the caller through `filters/` and `labelers/`, `go-gsea`
   itself has no fixed expectation of what these columns are named or mean.
+  Note that derived metrics (for example a ratio computed from two other
+  columns in the same table) are not statistically independent of the
+  columns they were derived from, running the pipeline once per related
+  column is not the same as running it on unrelated data, see the worked
+  example in section 8 for a real case of this.
 
 **Where this table typically comes from:** the worked example in this repo
 (`docs/examples/chlamydomonas.md`) uses a gene-level table produced by a
@@ -134,6 +144,7 @@ results are confidential and stay off GitHub entirely.
 ```
 go-gsea/
 ├── README.md
+├── LICENSE
 ├── environment.yml
 ├── pytest.ini
 ├── reference/          species-agnostic GO database construction,
@@ -189,7 +200,13 @@ about.
   precedent's own `population_list` construction. Skipping this step was an
   actual bug caught during development (see section 7), it silently
   inflated every population/expected-count denominator with genes that
-  could never contribute to any term's count.
+  could never contribute to any term's count. The population-eligibility
+  filters in `filters/population.py` (read-depth, usage-fraction, minimum
+  group size) implement the same principle one stage earlier, before class
+  labeling even happens, verified on real data by chaining a real read-depth
+  and a real usage-fraction filter and confirming both did real,
+  independent, non-trivial work rather than one dominating or either being
+  a no-op (see the worked example in section 8).
 - **Both `is_a` and `part_of` relationships must be propagated for correct
   GO term inheritance.** `goatools`'s own `GODag.get_all_parents()` was
   empirically confirmed to only follow `is_a`, silently omitting `part_of`
@@ -219,14 +236,27 @@ about.
   being compared), while p-values do not have this instability. Both p and
   q are always computed and reported regardless of which is used as the
   cutoff, `thresh_type`/`thresh` are run-time parameters, not hardcoded.
-  Language constraint that follows from the same reasoning: results at this
-  threshold should be described as genes that "tended to include" a GO
-  term, not as "statistically significant" findings, since no
-  multiple-testing correction is applied. A GO-slim run producing zero
-  significant terms is not automatically a sign of correctness or of a
-  bug, check the actual p-value spread in the "all" output file before
-  concluding either way, a coarse vocabulary can legitimately fail to
-  isolate a real, narrower signal.
+  Confirmed concretely on real data, not just argued abstractly: with 1,167
+  terms tested per class in a real run, the smallest observed p-value
+  (0.0025) still carries a BH-corrected q-value of 1.0, a q<0.01 cutoff
+  would have erased every real significant finding the run-time p<0.01
+  cutoff correctly surfaced. Language constraint that follows from the same
+  reasoning: results at this threshold should be described as genes that
+  "tended to include" a GO term, not as "statistically significant"
+  findings, since no multiple-testing correction is applied.
+- **A GO-slim run producing zero significant terms is not automatically a
+  sign of correctness or of a bug**, check the actual p-value spread in the
+  "all" output file before concluding either way, a coarse vocabulary can
+  legitimately fail to isolate a real, narrower signal. Confirmed with two
+  contrasting real datasets from the same pipeline, same code, same
+  species: one real metric produced zero significant GO-slim terms with a
+  p-value distribution showing no real pileup near zero (a genuine absence
+  of a slim-detectable signal), while a second, distinct real metric on the
+  same genes produced five significant GO-slim terms with a p-value
+  distribution clearly piled up near zero for the enriched class. The same
+  mechanism, tested twice on real data with opposite outcomes, is stronger
+  evidence the slim code path itself is correct than either single result
+  alone.
 - **`fold_enrichment` direction is computed independently of `scipy`'s
   Fisher's exact `odds_ratio`,** not derived from it. `odds_ratio`'s
   sign and magnitude depend on which row of the 2x2 table is "row 0," an
@@ -252,6 +282,14 @@ about.
   high-ID-confidence source versus a broad, lower-confidence one).
   `run_ora(..., unknown_ratio_thresh=...)` exposes this as an argument for
   exactly this reason.
+- **A derived metric (a ratio, a difference, or any other transformation
+  of other columns already present in the same table) is not an
+  independent second question**, even when it produces a genuinely
+  different GO enrichment result. Running the pipeline on both a base
+  metric and something derived from it is a useful, real check that the
+  pipeline generalizes across different label distributions, but it should
+  not be presented as evidence of independent validation on two unrelated
+  questions, see the worked example in section 8.
 
 ---
 
@@ -376,9 +414,10 @@ detail below is a flag, not a hardcoded assumption.
 | `--thresh-type` | `p` or `q`, default `p` (see section 4 for why) |
 | `--thresh` | Default 0.01 |
 
-A complete real invocation, with both full-GO and GO-slim, is shown in
-`docs/examples/chlamydomonas.md` (section 8), along with confirmation that
-it reproduces the exact same numbers as an independent hand-written run.
+Complete real invocations, on two distinct real metrics of the same
+dataset, are shown in `docs/examples/chlamydomonas.md` (section 8), along
+with confirmation that the CLI reproduces the exact same numbers as an
+independent hand-written run.
 
 ---
 
@@ -390,7 +429,7 @@ configured).
 
 | Module | Tests | Notes |
 |---|---|---|
-| `filters/population.py` | 7 | Includes a composed multi-filter interaction test |
+| `filters/population.py` | 7 | Synthetic tests include a composed multi-filter interaction test. Also verified against real data (see section 8): a real read-depth filter and a real usage-fraction filter were confirmed to each independently remove a meaningful, distinct subset of genes, with the chained result stricter than either alone |
 | `labelers/labelers.py` | 8 | `cluster()`'s Yeo-Johnson step returns a `(array, lambda)` tuple from `scipy`, not just an array, caught here, not in production |
 | `enrichment/ora.py` | 23 | Includes the `restrict_to_annotated_genes` population-correctness fix, verified with a dedicated test that a term's `population` count reflects only annotated genes, not the full input |
 | `enrichment/output.py` | 5 | Covers the all/over/under file split, that empty over or under files are skipped rather than written empty, and that a missing output directory is created rather than erroring |
@@ -399,7 +438,7 @@ configured).
 All 43 automated tests pass as of the last real-data integration run.
 `scripts/run_pipeline.py` has no dedicated tests of its own, it is
 verified by reproducing exact numbers from an independent hand-written
-run (see section 8).
+run, on two distinct real metrics (see section 8).
 
 ---
 
@@ -413,11 +452,14 @@ each decision point (annotation source, filter thresholds, labeling
 strategy), following the same principles.
 
 - **[`docs/examples/chlamydomonas.md`](docs/examples/chlamydomonas.md)**,
-  *Chlamydomonas reinhardtii* polysome-ratio (PR) translational-efficiency
-  analysis. First real end-to-end run of this pipeline: annotation-source
-  selection under a strain/assembly mismatch, real coverage/ID-overlap
-  numbers, a real full-GO and GO-slim comparison, and confirmation that
-  the CLI reproduces the same result as an independent hand-written run.
+  *Chlamydomonas reinhardtii*. Two real runs on the same gene set: a
+  translational-efficiency ratio (Polysome Ratio, PR) and total-fraction
+  expression (TPM). Covers annotation-source selection under a
+  strain/assembly mismatch, real coverage/ID-overlap numbers, a real
+  population-filter check on real depth/usage columns, a real full-GO and
+  GO-slim comparison for each metric with contrasting outcomes, and
+  confirmation that the CLI reproduces the same results as independent
+  hand-written runs.
 
 Additional examples (a different condition on the same species, a different
 species entirely, a non-expression-based labeling strategy) belong here as
@@ -442,14 +484,15 @@ choices without altering the general principles in section 4.
   date), useful for reproducibility. `write_results()` writes plain TSVs
   without this footer.
 - **`scripts/run_pipeline.py` has no automated tests of its own.** It is
-  verified only by matching an independent hand-written run's numbers
-  exactly (see section 8), not by a dedicated test file the way every
-  other module is.
-- **Only `PR_gene` (gene-level PR) has been run against real data.** `TPM`
-  and transcript- or variant-level PR are unexercised, and the tool has
-  not yet been run on a second species.
-- **No license file.** Worth adding before treating this as a finished
-  public repository.
+  verified only by matching independent hand-written runs' numbers exactly
+  (see section 8), not by a dedicated test file the way every other
+  module is.
+- **Both real metrics tested so far are gene-level, from one species.**
+  `PR_gene` and `TPM` are both gene-level columns from the same
+  Chlamydomonas dataset, and `PR_gene` is derived from `TPM` (see section
+  8), not statistically independent of it. Transcript- or variant-level
+  data, a `boolean_flag` or `explicit_threshold` or `cluster` labeling
+  strategy on real data, and a second species are all still unexercised.
 - **Commit history is intentionally terse.** This README (and the worked
   examples it links to), not the commit log, is the authoritative record
   of what changed and why.

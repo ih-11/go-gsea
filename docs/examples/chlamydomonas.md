@@ -1,26 +1,51 @@
-# Worked example: Chlamydomonas reinhardtii, polysome ratio (PR)
+# Worked example: Chlamydomonas reinhardtii, PR and TPM
 
-The first real, end-to-end application of `go-gsea`. This document records
-the specific choices made for this species and dataset, and why, following
-the general principles in the main `README.md` (section 4), but making
-decisions a different organism, condition, or metric might reasonably make
-differently.
+Two real, end-to-end applications of `go-gsea` on the same gene set. This
+document records the specific choices made for this species and dataset,
+and why, following the general principles in the main `README.md`
+(section 4), but making decisions a different organism, condition, or
+metric might reasonably make differently.
 
 ---
 
-## Research question
+## Research questions
 
-Translational efficiency (Polysome Ratio, PR, from `Project1_polysomelongread_PR`)
-compared between the top and bottom 10% of genes by `PR_gene`: which GO terms
-are over or under represented among the best and worst translated genes?
+1. Translational efficiency (Polysome Ratio, PR, from
+   `Project1_polysomelongread_PR`) compared between the top and bottom 10%
+   of genes by `PR_gene`: which GO terms are over or under represented
+   among the best and worst translated genes?
+2. Total-fraction expression level (TPM) compared between the top and
+   bottom 10% of genes by `TPM`: which GO terms are over or under
+   represented among the most and least abundant genes, independent of
+   translation status?
 
 ## Input data used
 
 A gene-level table, `CR_3D.PR.gene_data.tsv.gz`, produced by the upstream
 long-read pipeline described in the main README (section 2). Relevant
-columns for this run: `gene_id`, `PR_gene`. One row is excluded before
-labeling: the luciferase spike-in control (`gene:Standard-R-luc`), since it
-is a synthetic construct with no meaningful GO annotation.
+columns: `gene_id`, `PR_gene`, `PTPM`, `TPM`. One row is excluded before
+labeling in every run: the luciferase spike-in control
+(`gene:Standard-R-luc`), since it is a synthetic construct with no
+meaningful GO annotation.
+
+**`PTPM` and `TPM` are not two arbitrary columns, and `PR_gene` is not
+independent of either.** Confirmed directly from the upstream pipeline's
+own source code (`step1_data_preparation-1-PR.ipynb`): `PTPM` is
+Polysome-fraction TPM, `TPM` is Total-fraction TPM (an inconsistent naming
+choice, missing a `T` prefix for symmetry, not a different kind of
+quantity), and:
+
+```
+PR_gene = (PTPM / luciferase_P_TPM) / (TPM / luciferase_T_TPM)
+```
+
+`PR_gene` is computed directly from `PTPM` and `TPM`. Running GO
+enrichment once on `PR_gene` and once on `TPM` is a real, useful check
+that the pipeline generalizes across different label distributions and
+different underlying biology, but it is not two statistically independent
+validations, `TPM` is one of the two direct inputs `PR_gene` is built
+from. This is a real instance of the main README's design principle
+(section 4) that a derived metric is not an independent second question.
 
 ## GO annotation source: Phytozome, not UniProt-GOA
 
@@ -100,34 +125,55 @@ subset check before trusting the result: every one of the 2,100 slim
 genes' term sets was confirmed to be a strict subset of that same gene's
 full term set, zero violations.
 
+## Population filter check (real data)
+
+`filters/population.py`'s `read_depth_filter` and `usage_filter` had only
+ever been run against synthetic data before this check. Run against real
+`T_n_reads` (read depth) and `rTrans-usage.b` (representative-transcript
+usage fraction) columns:
+
+| Filter | Genes passing (of 3,594 total) |
+|---|---|
+| `read_depth_filter(col="T_n_reads", thresh=10)` alone | 2,232 |
+| `usage_filter(col="rTrans-usage.b", thresh=0.05)` alone | 3,346 |
+| Both, chained | 1,984 |
+
+Both filters independently removed a real, meaningful, and different
+subset of genes (neither is a no-op), and the chained result (1,984) is
+stricter than either alone, consistent with a correct AND composition
+rather than, for example, the smaller of the two individual results being
+returned by mistake.
+
 ## Real-data integration numbers
 
 - `build_godb.py` on the real Phytozome file: 3,203 annotated genes,
   matching an independently predicted count from the raw file before any
   code existed to build it.
 - `gene_data.tsv.gz`: 3,594 total genes (after dropping the luciferase
-  spike-in row and rows with missing `PR_gene`: 3,593).
+  spike-in row and rows with missing metric values: 3,593 for both
+  `PR_gene` and `TPM`).
 - ID overlap after `.vX.Y`-suffix normalization: 650 of 3,594 matched
   (18.1%), consistent with the about-19% genome-wide Phytozome coverage
   figure above, confirming the ID-matching logic is correct rather than
   coincidentally non-crashing.
-- Unknown-gene ratio for this run: about 82% (2,943 of 3,593 unannotated
+- Unknown-gene ratio for both runs: about 82% (2,943 of 3,593 unannotated
   genes), a direct consequence of the coverage tradeoff above. `run_ora()`'s
-  `unknown_ratio_thresh` was set to `0.9` for this run (main README section
-  4 explains why this threshold is a tunable parameter, not a fixed
-  constant: two copies of the original precedent script disagreed on this
-  exact value, `0.2` versus `0.9`, and which was current was never
-  definitively resolved).
+  `unknown_ratio_thresh` was set to `0.9` for both runs (main README
+  section 4 explains why this threshold is a tunable parameter, not a
+  fixed constant: two copies of the original precedent script disagreed
+  on this exact value, `0.2` versus `0.9`, and which was current was
+  never definitively resolved).
 
 ## Labeling strategy used
 
-`labelers.rank_tail(df, col="PR_gene", pct=10)`: top and bottom 10% by
-`PR_gene`, matching the confirmed real-data convention from prior lab work
-on Arabidopsis and rice (`AT-T87-HS-PR.tsv` and similar files were
-confirmed to use exactly 10%/10% splits, not a median split). 359 genes in
-each of `High`/`Low`.
+`labelers.rank_tail(df, col=<metric>, pct=10)` for both runs, top and
+bottom 10% by the given metric, matching the confirmed real-data
+convention from prior lab work on Arabidopsis and rice
+(`AT-T87-HS-PR.tsv` and similar files were confirmed to use exactly
+10%/10% splits, not a median split). 359 genes in each of `High`/`Low`
+for both runs.
 
-## Result, and how to read it
+## Result 1: PR_gene, and how to read it
 
 At `thresh_type="p", thresh=0.01`, full-GO:
 
@@ -150,26 +196,63 @@ directly rather than assumed correct: the actual p-value spread in
 not a suspicious wall of identical values, so this reflects a real
 absence of a slim-vocabulary-detectable signal at this threshold, not a
 broken computation. The closest term, `GO:0005694` (chromosome), sits at
-p = 0.021, fold_enrichment = 1.40. Plausible explanation: the 206-term
-slim vocabulary is coarse enough that the specific translation-machinery
-signal visible in full-GO (`GO:0006412`, itself only just outside the
-cutoff) does not survive being folded into a broader category.
+p = 0.021, fold_enrichment = 1.40.
 
-Per the main README's language-constraint principle, these are described
-as genes that tended to include these terms, not as statistically
-significant findings, since this threshold applies no multiple-testing
-correction.
+**Empirical demonstration of the p-value versus q-value design
+principle** (main README section 4): with 1,167 terms tested per class,
+even the smallest observed p-value in this run (0.0025, `GO:0016043` in
+the Low class) carries a BH-corrected q-value of 1.0. A q<0.01 cutoff
+would have erased all 7 real significant findings, including the
+biologically sensible `GO:0006412` near-miss result, that the run-time
+p<0.01 cutoff correctly surfaced.
 
-**Caveat to carry into any write-up using this result:** every full-GO
-number above is built on the about-19%-coverage Phytozome annotation
-layer, not a comprehensive one. A `GO:0006412` population of 49 genes is
-out of about 650 GO-annotated genes in this run, not the full 3,593-gene
-analyzed set.
+## Result 2: TPM, and how to read it
 
-## Reproducing this run
+At `thresh_type="p", thresh=0.01`, full-GO:
 
-Through the CLI (`scripts/run_pipeline.py`, full flag reference in the main
-README section 6), both full-GO and GO-slim in one call:
+- **High-TPM (most abundant) genes: a textbook ribosome/translation
+  signature.** Top terms by p-value: `GO:0003735` structural constituent
+  of ribosome (p=9.7e-15), `GO:0005840` ribosome (p=3.9e-14), `GO:0006412`
+  translation (p=6.1e-14), `GO:0160307` protein biosynthetic process
+  (same p), `GO:0005198` structural molecule activity (p=7.6e-12), plus
+  broader organelle and gene-expression terms. 24 of 1,167 terms tested
+  reached significance for this class, 21 over-represented, 3
+  under-represented. This is the expected biological direction: ribosomal
+  and translation-machinery genes are among the most highly and
+  constitutively expressed genes in any eukaryotic cell, and this signal
+  appearing this strongly on the very first real run of a metric the code
+  had never been tested against before is a strong positive signal for
+  the correctness of the whole chain (ID matching, propagation, the
+  Fisher's exact and fold-enrichment computation), not just for this one
+  dataset.
+- **Low-TPM (least abundant) genes: the mirror image.** `GO:0003723` RNA
+  binding significant at p=0.0064 (fold_enrichment = -2.72, under
+  represented). `GO:0006412` translation and `GO:0160307` protein
+  biosynthetic process both appear as near misses in the under
+  represented direction (p=0.0105, fold_enrichment = -2.67). Ribosomal
+  and translation genes essentially never appearing among the least
+  expressed genes is the direct inverse of the High-TPM finding, an
+  internally consistent result across both tails of the same
+  distribution.
+
+**GO-slim, same labeled genes, same threshold: 5 significant terms**,
+contrasting directly with the 0 found for `PR_gene` above. The p-value
+histogram for the High class shows a real pileup near zero, not only
+near 1.0. This is the concrete case that the main README's GO-slim design
+principle (section 4) needed: the same slim-intersection code, run twice
+on real data from the same species, correctly found zero signal when
+none was really there (`PR_gene`) and correctly found real signal when it
+was there (`TPM`), rather than defaulting to zero regardless of input.
+The full-GO versus GO-slim agreement scatter for shared terms shows a
+near-perfect diagonal for both runs, confirming `build_slim_godb()`
+generalizes correctly to a metric it was not originally built or tested
+against.
+
+## Reproducing these runs
+
+Through the CLI (`scripts/run_pipeline.py`, full flag reference in the
+main README section 6), both full-GO and GO-slim in one call. Only
+`--metric-col` and `--dataset-name` differ between the two runs:
 
 ```
 python scripts/run_pipeline.py \
@@ -188,16 +271,38 @@ python scripts/run_pipeline.py \
     --thresh-type p --thresh 0.01
 ```
 
-Confirmed to reproduce the exact numbers above (359 High, 359 Low, 2,334
-full-GO rows tested, 7 significant, 172 slim rows tested, 0 significant)
-against an earlier, independent hand-written script that called the same
-library functions directly, before `scripts/run_pipeline.py` existed.
+```
+python scripts/run_pipeline.py \
+    --input-table /path/to/CR_3D.PR.gene_data.tsv.gz \
+    --godb data/go_reference/chlamy.godb.pkl \
+    --slim-godb data/go_reference/chlamy.slim.godb.pkl \
+    --metric-col TPM \
+    --id-col gene_id \
+    --strip-id-suffix '\.v\d+\.\d+$' \
+    --exclude-id 'gene:Standard-R-luc' \
+    --label-strategy rank_tail --pct 10 \
+    --output-dir results/GO \
+    --slim-output-dir results/GO_slim \
+    --dataset-name CR_3D.TPM \
+    --unknown-ratio-thresh 0.9 \
+    --thresh-type p --thresh 0.01
+```
+
+Both confirmed to reproduce the exact numbers above (359 High, 359 Low
+for both runs, 2,334 full-GO rows tested for both, 7 significant for
+`PR_gene` and 25 for `TPM`, 172 slim rows tested for both, 0 significant
+for `PR_gene` and 5 for `TPM`) against independent hand-written scripts
+that called the same library functions directly.
 
 ## Open items specific to this example
 
-- Only `PR_gene` (gene-level PR) has been run. `TPM` and `PTPM` (which
-  fraction bare `TPM` represents in `gene_data.tsv.gz` was never fully
-  confirmed) and transcript- or variant-level PR are unexercised.
+- Only gene-level `PR_gene` and `TPM` have been run, both from the same
+  species and the same underlying gene set. Transcript- or variant-level
+  PR, and a second species, are unexercised.
+- Only the `rank_tail` labeling strategy has been run on real data.
+  `explicit_threshold`, `boolean_flag`, and `cluster` (the Ward's-method
+  approach specifically called out as the main result in the original
+  lab's translatome analysis) remain unverified outside synthetic tests.
 - Ortholog-transfer supplementation and provenance-stamped output files
   are still open across the whole tool (main README section 9), nothing
   here is Chlamydomonas-specific about those gaps.
