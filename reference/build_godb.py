@@ -94,3 +94,48 @@ def build_and_cache_godb(annotation_info_path, obo_path, cache_path):
     with open(cache_path, "wb") as f:
         pickle.dump(godb, f)
     return godb
+
+def build_slim_godb(gene_go_full, slim_obo_path):
+    """
+    Given gene_go_full (the already-propagated dict[gene_id] -> set(GO_id)
+    from build_and_cache_godb), intersects each gene's term set against
+    whichever terms exist in the slim ontology.
+
+    Matches the precedent's --slim-obo mode: full-GO propagation happens
+    first (already done, in gene_go_full), then the result is restricted
+    to the smaller slim vocabulary -- this is a filter on top of full
+    propagation, not a separate propagation pass.
+    """
+    slim_dag = GODag(str(slim_obo_path))
+    slim_term_ids = set(slim_dag.keys())
+
+    gene_go_slim = {}
+    for gene_id, terms in gene_go_full.items():
+        slim_terms = terms & slim_term_ids
+        if slim_terms:
+            gene_go_slim[gene_id] = slim_terms
+
+    return gene_go_slim
+
+
+def build_and_cache_slim_godb(full_godb_path, slim_obo_path, slim_cache_path):
+    """
+    Loads an already-built full .godb (from build_and_cache_godb), derives
+    its slim version, and caches it separately.
+    """
+    with open(full_godb_path, "rb") as f:
+        full_godb = pickle.load(f)
+
+    gene_go_slim = build_slim_godb(full_godb["gene_go"], slim_obo_path)
+
+    slim_godb = {
+        "gene_go": gene_go_slim,
+        "provenance": {g: full_godb["provenance"].get(g, "unknown") for g in gene_go_slim},
+        "source": full_godb["source"],
+        "obo": full_godb["obo"],
+        "slim_obo": str(slim_obo_path),
+    }
+    Path(slim_cache_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(slim_cache_path, "wb") as f:
+        pickle.dump(slim_godb, f)
+    return slim_godb
