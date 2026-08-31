@@ -65,10 +65,10 @@ flowchart TD
     end
 
     subgraph LAB["labelers/ -- Stage B: class assignment"]
-        E1[rank_tail<br/>top/bottom N%]
+        E1["rank_tail<br/>top/bottom N%"]
         E2[explicit_threshold]
         E3[boolean_flag]
-        E4[cluster<br/>Yeo-Johnson + Ward's method]
+        E4["cluster<br/>Yeo-Johnson + Ward's method"]
     end
 
     subgraph ORA["enrichment/ -- statistical engine"]
@@ -89,6 +89,25 @@ flowchart TD
     LAB -->|"labeled_df<br/>(gene_id, class)"| F1
     C1 --> F1
     F6 --> H[("results table<br/>go_id, class, population,<br/>observed, expected,<br/>fold_enrichment, p, q, significance")]
+
+    classDef refNode fill:#9CC3D5,stroke:#0F2A3D,stroke-width:2px,color:#0F2A3D,font-weight:bold;
+    classDef filtNode fill:#E39A5D,stroke:#5C2E12,stroke-width:2px,color:#3A1D0C,font-weight:bold;
+    classDef labNode fill:#E8D3A0,stroke:#6B5527,stroke-width:2px,color:#3A2E12,font-weight:bold;
+    classDef oraNode fill:#B7BE8D,stroke:#4A4D2E,stroke-width:2px,color:#2C2E1B,font-weight:bold;
+    classDef dataNode fill:#D97B3F,stroke:#5C2E12,stroke-width:3px,color:#FFFFFF,font-weight:bold;
+
+    class A1,A2,B1,C1 refNode;
+    class D1,D2,D3,D4 filtNode;
+    class E1,E2,E3,E4 labNode;
+    class F1,F2,F3,F4,F5,F6 oraNode;
+    class G,H dataNode;
+
+    style REF fill:#1B3A52,stroke:#9CC3D5,stroke-width:2px,color:#FFFFFF;
+    style FILT fill:#5C2E12,stroke:#E39A5D,stroke-width:2px,color:#FFFFFF;
+    style LAB fill:#6B5527,stroke:#E8D3A0,stroke-width:2px,color:#FFFFFF;
+    style ORA fill:#4A4D2E,stroke:#B7BE8D,stroke-width:2px,color:#FFFFFF;
+
+    linkStyle default stroke:#CCCCCC,stroke-width:1.5px;
 ```
 
 Every arrow above is real, tested code, not aspirational — see section 5 for
