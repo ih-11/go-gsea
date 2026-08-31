@@ -67,10 +67,13 @@ def build_parser():
                          help="Gene ID column name in the input table.")
     parser.add_argument("--strip-id-suffix", default=None,
                          help="Regex to strip from gene IDs before matching against the godb "
-                              "(e.g. a trailing version suffix like '.v6.1').")
+                              "(e.g. a trailing version suffix like '.v6.1'). Applied BEFORE "
+                              "--exclude-id, see that flag's help for what this means in practice.")
     parser.add_argument("--exclude-id", action="append", default=[],
                          help="Gene ID(s) to exclude before labeling (e.g. a spike-in control). "
-                              "Can be given multiple times.")
+                              "Applied AFTER --strip-id-suffix -- if both flags are used, give "
+                              "the already-stripped form of the ID here, not the raw one, or the "
+                              "exclusion will silently fail to match. Can be given multiple times.")
 
     parser.add_argument("--label-strategy", required=True, choices=list(LABEL_STRATEGIES.keys()))
     parser.add_argument("--pct", type=float, default=10,
@@ -99,6 +102,14 @@ def build_parser():
 
 
 def load_input_table(path, id_col, strip_id_suffix, exclude_ids, metric_col):
+    """
+    Order of operations matters here: --strip-id-suffix is applied first,
+    --exclude-id matching happens second, against the already-stripped
+    IDs. This is documented in --exclude-id's help text above -- if a raw
+    (unstripped) ID is passed to --exclude-id while --strip-id-suffix is
+    also given, the exclusion will silently fail to match anything, since
+    the comparison happens after stripping, not before.
+    """
     df = pd.read_csv(path, sep="\t", comment="#")
     if strip_id_suffix:
         df[id_col] = df[id_col].apply(lambda g: re.sub(strip_id_suffix, "", g))
@@ -147,6 +158,7 @@ def main():
           f"{int(result['significance'].sum()) if len(result) else 0} significant")
 
     written = write_results(result, args.output_dir, args.dataset_name)
+
     if args.slim_godb:
         if not args.slim_output_dir:
             raise ValueError("--slim-output-dir is required when --slim-godb is given")
@@ -163,6 +175,7 @@ def main():
         print("[GO-slim] Files written:")
         for key, path in slim_written.items():
             print(f"  {key}: {path}")
+
     print("Files written:")
     for key, path in written.items():
         print(f"  {key}: {path}")
