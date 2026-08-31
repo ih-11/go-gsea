@@ -1,0 +1,18 @@
+name: go-gsea
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - pandas
+  - numpy
+  - scipy
+  - statsmodels
+  - pyyaml
+  - matplotlib
+  - seaborn
+  - pytest
+  - pip
+  - pip:
+      - goatools==1.6.4
+      - gseapy==1.2.1
