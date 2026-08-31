@@ -6,6 +6,7 @@ comparing a labeled class against the full population.
 """
 import math
 from scipy import stats as scipy_stats
+from statsmodels.stats.multitest import multipletests
 
 
 def fisher_exact_for_term(n_pop_with_term, n_pop_total, n_class_with_term, n_class_total):
@@ -37,3 +38,16 @@ def fold_enrichment(n_pop_with_term, n_pop_total, n_class_with_term, n_class_tot
     pop_ratio = n_pop_with_term / n_pop_total
     n_expected = pop_ratio * n_class_total
     return math.log2((n_class_with_term + 1) / (n_expected + 1))
+
+
+def bh_correct(p_values):
+    """
+    Benjamini-Hochberg FDR correction across a list of p-values.
+    Matches stats_test_based_on_go.py exactly: multipletests(..., method='fdr_bh').
+
+    Returns a list of q-values in the same order as the input.
+    """
+    if len(p_values) == 0:
+        return []
+    _, q_values, _, _ = multipletests(p_values, method="fdr_bh")
+    return list(q_values)
