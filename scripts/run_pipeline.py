@@ -89,6 +89,11 @@ def build_parser():
     parser.add_argument("--unknown-ratio-thresh", type=float, default=0.9)
     parser.add_argument("--thresh-type", choices=["p", "q"], default="p")
     parser.add_argument("--thresh", type=float, default=0.01)
+    parser.add_argument("--slim-godb", default=None,
+                         help="Optional path to a cached slim .godb (from build_and_cache_slim_godb). "
+                              "If given, also runs enrichment against it and writes to --slim-output-dir.")
+    parser.add_argument("--slim-output-dir", default=None,
+                         help="Required if --slim-godb is given.")
 
     return parser
 
@@ -142,6 +147,22 @@ def main():
           f"{int(result['significance'].sum()) if len(result) else 0} significant")
 
     written = write_results(result, args.output_dir, args.dataset_name)
+    if args.slim_godb:
+        if not args.slim_output_dir:
+            raise ValueError("--slim-output-dir is required when --slim-godb is given")
+        with open(args.slim_godb, "rb") as f:
+            slim_godb = pickle.load(f)
+        slim_result = run_ora(
+            slim_godb["gene_go"], labeled_df,
+            unknown_ratio_thresh=args.unknown_ratio_thresh,
+            thresh_type=args.thresh_type, thresh=args.thresh,
+        )
+        print(f"[GO-slim] Tested {len(slim_result)} rows, "
+              f"{int(slim_result['significance'].sum()) if len(slim_result) else 0} significant")
+        slim_written = write_results(slim_result, args.slim_output_dir, args.dataset_name)
+        print("[GO-slim] Files written:")
+        for key, path in slim_written.items():
+            print(f"  {key}: {path}")
     print("Files written:")
     for key, path in written.items():
         print(f"  {key}: {path}")
