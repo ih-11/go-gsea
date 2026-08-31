@@ -85,12 +85,8 @@ def cluster(df, cols, method="ward", transform="yeo-johnson", n_clusters=None,
     data = df[cols].copy()
 
     if transform == "yeo-johnson":
-        data = pd.DataFrame(
-            scipy_stats.yeojohnson(data.values.flatten()).reshape(data.shape)
-            if data.shape[1] == 1 else
-            data.apply(lambda c: scipy_stats.yeojohnson(c)[0]),
-            index=data.index, columns=data.columns,
-        )
+        # yeojohnson() returns (transformed_array, lambda) -- keep only [0]
+        data = data.apply(lambda c: scipy_stats.yeojohnson(c)[0])
 
     z = (data - data.mean()) / data.std()
 
