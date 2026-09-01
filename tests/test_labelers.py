@@ -5,8 +5,10 @@ import pandas as pd
 import numpy as np
 import pytest
 
-from labelers.labelers import rank_tail, explicit_threshold, boolean_flag, cluster
-
+from labelers.labelers import (
+    rank_tail, explicit_threshold, boolean_flag, cluster,
+    elbow_curve, silhouette_scores, sample_silhouette,
+)
 
 def test_rank_tail_labels_exactly_top_and_bottom_pct():
     df = pd.DataFrame({"gene_id": [f"g{i}" for i in range(100)], "value": range(100)})
@@ -71,3 +73,53 @@ def test_cluster_separates_two_obviously_distinct_groups():
     assert len(labels_a) == 1
     assert len(labels_b) == 1
     assert labels_a != labels_b
+
+def test_elbow_curve_wss_decreases_from_k1_to_k2():
+    np.random.seed(1)
+    clump_a = np.random.normal(0, 0.1, 20)
+    clump_b = np.random.normal(50, 0.1, 20)
+    df = pd.DataFrame({
+        "gene_id": [f"g{i}" for i in range(40)],
+        "val": np.concatenate([clump_a, clump_b]),
+    })
+    k_list, wss_list = elbow_curve(df, ["val"], max_k=5)
+    assert k_list == [1, 2, 3, 4, 5]
+    assert wss_list[0] > wss_list[1]
+
+
+def test_elbow_curve_wss_is_monotonically_non_increasing():
+    np.random.seed(2)
+    df = pd.DataFrame({
+        "gene_id": [f"g{i}" for i in range(30)],
+        "val": np.random.normal(0, 1, 30),
+    })
+    k_list, wss_list = elbow_curve(df, ["val"], max_k=10)
+    assert all(wss_list[i] >= wss_list[i + 1] - 1e-9 for i in range(len(wss_list) - 1))
+
+
+def test_silhouette_scores_prefers_the_true_number_of_clumps():
+    np.random.seed(3)
+    clump_a = np.random.normal(0, 0.1, 20)
+    clump_b = np.random.normal(50, 0.1, 20)
+    df = pd.DataFrame({
+        "gene_id": [f"g{i}" for i in range(40)],
+        "val": np.concatenate([clump_a, clump_b]),
+    })
+    k_list, score_list = silhouette_scores(df, ["val"], k_range=range(2, 6))
+    best_k = k_list[int(np.argmax(score_list))]
+    assert best_k == 2
+
+
+def test_sample_silhouette_returns_one_row_per_input_row():
+    np.random.seed(4)
+    clump_a = np.random.normal(0, 0.1, 10)
+    clump_b = np.random.normal(50, 0.1, 10)
+    df = pd.DataFrame({
+        "gene_id": [f"g{i}" for i in range(20)],
+        "val": np.concatenate([clump_a, clump_b]),
+    })
+    result = sample_silhouette(df, ["val"], n_clusters=2)
+    assert len(result) == 20
+    assert "cluster" in result.columns
+    assert "silhouette" in result.columns
+    assert result["silhouette"].mean() > 0.8

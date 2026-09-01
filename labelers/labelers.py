@@ -100,3 +100,112 @@ def cluster(df, cols, method="ward", transform="yeo-johnson", n_clusters=None,
 
     df["class"] = [str(l) for l in labels]
     return df
+
+def elbow_curve(df, cols, method="ward", metric="euclidean",
+                 transform="yeo-johnson", max_k=20):
+    """
+    Within-cluster sum of squared errors (WSS) for k = 1..max_k, for
+    plotting an elbow curve -- the k where WSS stops dropping sharply
+    ("the bend") is a candidate cluster count. Mirrors the diagnostic
+    used in the lab's own hierarchical-clustering teaching material
+    (2023-DG-DataProcessing-11, plot_elbow_curve_hc).
+
+    Returns (k_list, wss_list), both plain lists for easy plotting.
+    Does NOT choose k for you -- inspect the plot and decide.
+    """
+    import numpy as np
+
+    data = df[cols].copy()
+    if transform == "yeo-johnson":
+        data = data.apply(lambda c: scipy_stats.yeojohnson(c)[0])
+    z = (data - data.mean()) / data.std()
+
+    n = len(z)
+    max_k = min(max_k, n)
+    link = linkage(pdist(z.values, metric=metric), method=method)
+    z_values = z.values
+
+    k_list = list(range(1, max_k + 1))
+    wss_list = []
+    for k in k_list:
+        if k == 1:
+            labels = np.ones(n, dtype=int)
+        else:
+            labels = fcluster(link, t=k, criterion="maxclust")
+        wss = 0.0
+        for lbl in np.unique(labels):
+            sub = z_values[labels == lbl]
+            center = sub.mean(axis=0)
+            wss += float(np.sum((sub - center) ** 2))
+        wss_list.append(wss)
+
+    return k_list, wss_list
+
+
+def silhouette_scores(df, cols, method="ward", metric="euclidean",
+                       transform="yeo-johnson", k_range=None):
+    """
+    Average silhouette score for each candidate k in k_range (default
+    2..min(20, n_samples-1)) -- higher is better-separated. A second,
+    independent diagnostic alongside elbow_curve(), matching the lab's
+    own teaching material's paired use of both.
+
+    Returns (k_list, score_list). Requires scikit-learn.
+    """
+    import numpy as np
+    from sklearn.metrics import silhouette_score
+
+    data = df[cols].copy()
+    if transform == "yeo-johnson":
+        data = data.apply(lambda c: scipy_stats.yeojohnson(c)[0])
+    z = (data - data.mean()) / data.std()
+
+    n = len(z)
+    if k_range is None:
+        k_range = range(2, min(21, n))
+
+    link = linkage(pdist(z.values, metric=metric), method=method)
+    z_values = z.values
+
+    k_list, score_list = [], []
+    for k in k_range:
+        if k < 2 or k >= n:
+            continue
+        labels = fcluster(link, t=k, criterion="maxclust")
+        if len(np.unique(labels)) < 2:
+            continue
+        score = silhouette_score(z_values, labels, metric=metric)
+        k_list.append(k)
+        score_list.append(float(score))
+
+    return k_list, score_list
+
+
+def sample_silhouette(df, cols, n_clusters, method="ward", metric="euclidean",
+                       transform="yeo-johnson"):
+    """
+    Per-row silhouette coefficient for one specific candidate n_clusters,
+    to check whether THAT split is actually well-separated before
+    committing to it (values near 1 = good fit, near 0 = borderline,
+    negative = likely misassigned). Matches the lab's own teaching
+    material's per-sample diagnostic step, used after the elbow/silhouette
+    curves narrow down a candidate k.
+
+    Returns a copy of df with two added columns: 'cluster' (the label at
+    this n_clusters) and 'silhouette' (that row's coefficient).
+    """
+    from sklearn.metrics import silhouette_samples
+
+    data = df[cols].copy()
+    if transform == "yeo-johnson":
+        data = data.apply(lambda c: scipy_stats.yeojohnson(c)[0])
+    z = (data - data.mean()) / data.std()
+
+    link = linkage(pdist(z.values, metric=metric), method=method)
+    labels = fcluster(link, t=n_clusters, criterion="maxclust")
+    sil = silhouette_samples(z.values, labels, metric=metric)
+
+    result = df.copy()
+    result["cluster"] = labels
+    result["silhouette"] = sil
+    return result
