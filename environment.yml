@@ -11,11 +11,10 @@ dependencies:
   - pyyaml
   - matplotlib
   - seaborn
+  - scikit-learn=1.9.0
+  - jupyter
   - pytest
   - pip
   - pip:
-  - scikit-learn==1.9.0
-  - jupyter
-  - pytest
       - goatools==1.6.4
       - gseapy==1.2.1
