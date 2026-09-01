@@ -10,7 +10,7 @@ Example, matching the real Chlamydomonas PR_gene run:
 
     python scripts/run_pipeline.py \\
         --input-table /path/to/gene_data.tsv.gz \\
-        --godb data/go_reference/chlamy.godb.pkl \\
+        --godb data/go_reference/CR/CR.godb.pkl \\
         --metric-col PR_gene \\
         --id-col gene_id \\
         --strip-id-suffix '\\.v\\d+\\.\\d+$' \\
@@ -20,6 +20,21 @@ Example, matching the real Chlamydomonas PR_gene run:
         --dataset-name CR_3D.PR_gene \\
         --unknown-ratio-thresh 0.9 \\
         --thresh-type p --thresh 0.01
+
+--metric-col accepts one or more values. rank_tail, explicit_threshold,
+and boolean_flag each require EXACTLY ONE (that is inherent to what
+those strategies mean -- a single column's ranks, a single column's
+threshold, a single boolean column). cluster accepts ONE OR MORE, since
+labelers.cluster() has supported multi-column input since it was first
+written -- multiple values is how a real multi-condition or
+multi-metric clustering run is expressed, e.g.:
+
+    --metric-col PR_gene --label-strategy cluster --n-clusters 4
+
+for a single-column cluster run, or, after merging several source files
+into one wide table first (see dataprep/merge_tables.py):
+
+    --metric-col cond_3D cond_6D --label-strategy cluster --n-clusters 4
 
 This script knows nothing about Chlamydomonas or PR specifically -- every
 species/metric-specific detail above is a command-line argument, not a
@@ -51,6 +66,12 @@ LABEL_STRATEGIES = {
     "cluster": cluster,
 }
 
+# Strategies that operate on exactly one column vs. strategies that can
+# take one or more. Single-column strategies fail loudly if given more
+# than one --metric-col value, rather than silently using only the first.
+SINGLE_COLUMN_STRATEGIES = {"rank_tail", "explicit_threshold", "boolean_flag"}
+MULTI_COLUMN_STRATEGIES = {"cluster"}
+
 
 def build_parser():
     parser = argparse.ArgumentParser(
@@ -61,8 +82,10 @@ def build_parser():
                          help="Path to a gene-level TSV (plain or .gz). See README section 2.")
     parser.add_argument("--godb", required=True,
                          help="Path to a cached .godb pickle from reference/build_godb.py.")
-    parser.add_argument("--metric-col", required=True,
-                         help="Column in the input table to label genes by.")
+    parser.add_argument("--metric-col", required=True, nargs="+",
+                         help="Column(s) in the input table to label genes by. "
+                              "rank_tail/explicit_threshold/boolean_flag require exactly one. "
+                              "cluster accepts one or more (see this script's module docstring).")
     parser.add_argument("--id-col", default="gene_id",
                          help="Gene ID column name in the input table.")
     parser.add_argument("--strip-id-suffix", default=None,
@@ -101,7 +124,24 @@ def build_parser():
     return parser
 
 
-def load_input_table(path, id_col, strip_id_suffix, exclude_ids, metric_col):
+def validate_metric_cols(metric_cols, label_strategy):
+    """
+    Raises ValueError if metric_cols' length doesn't match what
+    label_strategy actually supports. Kept as its own function so this
+    check is easy to unit test in isolation from argparse/CLI plumbing.
+    """
+    if label_strategy in SINGLE_COLUMN_STRATEGIES and len(metric_cols) != 1:
+        raise ValueError(
+            f"--label-strategy {label_strategy} requires exactly one --metric-col value, "
+            f"got {len(metric_cols)}: {metric_cols}"
+        )
+    if label_strategy in MULTI_COLUMN_STRATEGIES and len(metric_cols) < 1:
+        raise ValueError(
+            f"--label-strategy {label_strategy} requires at least one --metric-col value"
+        )
+
+
+def load_input_table(path, id_col, strip_id_suffix, exclude_ids, metric_cols):
     """
     Order of operations matters here: --strip-id-suffix is applied first,
     --exclude-id matching happens second, against the already-stripped
@@ -109,31 +149,36 @@ def load_input_table(path, id_col, strip_id_suffix, exclude_ids, metric_col):
     (unstripped) ID is passed to --exclude-id while --strip-id-suffix is
     also given, the exclusion will silently fail to match anything, since
     the comparison happens after stripping, not before.
+
+    dropna is applied across ALL given metric_cols -- a row missing any
+    one of them is dropped, matching merge_gene_tables()'s own inner-join
+    philosophy (a gene needs a valid value in every column being used).
     """
     df = pd.read_csv(path, sep="\t", comment="#")
     if strip_id_suffix:
         df[id_col] = df[id_col].apply(lambda g: re.sub(strip_id_suffix, "", g))
     if exclude_ids:
         df = df[~df[id_col].isin(exclude_ids)]
-    df = df.dropna(subset=[metric_col])
+    df = df.dropna(subset=metric_cols)
     return df
 
 
 def apply_label_strategy(df, args):
     fn = LABEL_STRATEGIES[args.label_strategy]
     if args.label_strategy == "rank_tail":
-        return fn(df, col=args.metric_col, pct=args.pct)
+        return fn(df, col=args.metric_col[0], pct=args.pct)
     elif args.label_strategy == "explicit_threshold":
-        return fn(df, col=args.metric_col, high_thresh=args.high_thresh, low_thresh=args.low_thresh)
+        return fn(df, col=args.metric_col[0], high_thresh=args.high_thresh, low_thresh=args.low_thresh)
     elif args.label_strategy == "boolean_flag":
-        return fn(df, bool_col=args.metric_col)
+        return fn(df, bool_col=args.metric_col[0])
     elif args.label_strategy == "cluster":
-        return fn(df, cols=[args.metric_col], n_clusters=args.n_clusters)
+        return fn(df, cols=args.metric_col, n_clusters=args.n_clusters)
     raise ValueError(f"Unhandled label strategy: {args.label_strategy}")
 
 
 def main():
     args = build_parser().parse_args()
+    validate_metric_cols(args.metric_col, args.label_strategy)
 
     with open(args.godb, "rb") as f:
         godb = pickle.load(f)
