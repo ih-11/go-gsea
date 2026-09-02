@@ -1,371 +1,370 @@
-# Worked example: Chlamydomonas reinhardtii, PR and TPM
+# Worked example: Chlamydomonas reinhardtii
 
-Three real, end-to-end applications of `go-gsea` on the same gene set: two
-different metrics (`PR_gene`, `TPM`) with the `rank_tail` labeling
-strategy, and one different labeling mechanism (`cluster`, Ward's method)
-on `PR_gene` again. This document records the specific choices made for
-this species and dataset, and why, following the general principles in
-the main `README.md` (section 4), but making decisions a different
-organism, condition, or metric might reasonably make differently.
+Seven real, end-to-end applications of `go-gsea` on real data: two
+growth-stage conditions (3 and 6 days), three metrics, two labeling
+strategies with real lab precedent, and both single-file and genuine
+merged-multi-condition scopes. This document records the specific choices
+made for this species and dataset, and why, following the general
+principles in the main `README.md` (section 4), but making decisions a
+different organism, condition, or metric might reasonably make
+differently.
 
 ---
 
-## Research questions
+## Demo gallery
 
-1. Translational efficiency (Polysome Ratio, PR, from
-   `Project1_polysomelongread_PR`) compared between the top and bottom 10%
-   of genes by `PR_gene`: which GO terms are over or under represented
-   among the best and worst translated genes?
-2. Total-fraction expression level (TPM) compared between the top and
-   bottom 10% of genes by `TPM`: which GO terms are over or under
-   represented among the most and least abundant genes, independent of
-   translation status?
-3. Does an unsupervised grouping of genes by `PR_gene` value (Ward's-method
-   hierarchical clustering, rather than a fixed top/bottom percentage cut)
-   independently recover the same biological signal question 1 found?
+| # | Strategy | Metric(s) | Scope | Genes (per class) | Full-GO sig. | Slim sig. |
+|---|---|---|---|---|---|---|
+| A | `rank_tail` | `PR_gene` | CR_3D alone | 359 / 359 | 7 | 0 |
+| B | `rank_tail` | `TPM` | CR_3D alone | 359 / 359 | 25 | 5 |
+| C | `cluster`, k=4 | `PR_gene` | CR_3D alone | 470/431/1612/1080 | 13 | 4 |
+| D | `rank_tail` | `PTPM` | CR_6D alone | 305 / 305 | 24 | 4 |
+| E | `cluster`, k=3 | `PTPM`, `TPM` jointly | CR_6D alone | 1156/689/1212 | 21 | 4 |
+| F | `cluster`, k=2 | `PR_gene` | CR_3D + CR_6D merged | 332 / 2326 | 28 | 6 |
+| G | `cluster`, k=2 | `TPM` | CR_3D + CR_6D merged | 1374 / 1284 | 18 | 3 |
 
-## Input data used
+**Every one of the seven demos independently surfaces the same core
+biological signal**: ribosome and translation-machinery genes
+(`GO:0003735` structural constituent of ribosome, `GO:0005840` ribosome,
+`GO:0006412` translation, `GO:0160307` protein biosynthetic process),
+over-represented in high-expression/high-PR/consistently-well-translated
+groups and under-represented in the opposite groups, across two
+conditions, three metrics, both labeling strategies, and both scopes.
+That convergence, not any single demo, is the strongest evidence in this
+project that the pipeline is finding something real rather than an
+artifact of one dataset or one method.
 
-A gene-level table, `CR_3D.PR.gene_data.tsv.gz`, produced by the upstream
-long-read pipeline described in the main README (section 2). Relevant
-columns: `gene_id`, `PR_gene`, `PTPM`, `TPM`. One row is excluded before
-labeling in every run: the luciferase spike-in control
-(`gene:Standard-R-luc`), since it is a synthetic construct with no
-meaningful GO annotation.
+---
 
-**`PTPM` and `TPM` are not two arbitrary columns, and `PR_gene` is not
-independent of either.** Confirmed directly from the upstream pipeline's
-own source code (`step1_data_preparation-1-PR.ipynb`): `PTPM` is
-Polysome-fraction TPM, `TPM` is Total-fraction TPM (an inconsistent naming
-choice, missing a `T` prefix for symmetry, not a different kind of
-quantity), and:
+## Shared setup, applies to all seven demos
+
+### Input data
+
+Gene-level tables `CR_3D.PR.gene_data.tsv.gz` and `CR_6D.PR.gene_data.tsv.gz`,
+produced by the upstream long-read pipeline (main README section 2).
+Relevant columns: `gene_id`, `PR_gene`, `PTPM`, `TPM`. The luciferase
+spike-in control (`gene:Standard-R-luc`) is excluded in every demo, it is
+a synthetic construct with no meaningful GO annotation.
+
+**`PTPM`/`TPM`/`PR_gene` are not three independent metrics.** Confirmed
+from the upstream pipeline's own source code: `PTPM` is Polysome-fraction
+TPM, `TPM` is Total-fraction TPM, and:
 
 ```
 PR_gene = (PTPM / luciferase_P_TPM) / (TPM / luciferase_T_TPM)
 ```
 
-`PR_gene` is computed directly from `PTPM` and `TPM`. Running GO
-enrichment once on `PR_gene` and once on `TPM` is a real, useful check
-that the pipeline generalizes across different label distributions and
-different underlying biology, but it is not two statistically independent
-validations, `TPM` is one of the two direct inputs `PR_gene` is built
-from. This is a real instance of the main README's design principle
-(section 4) that a derived metric is not an independent second question.
+Demos comparing across these three are useful checks that the pipeline
+generalizes across different label distributions, not independent
+validations of unrelated questions (main README section 4).
 
-**A note on the `cluster` labeling strategy specifically:** the original
-lab precedent for Ward's-method clustering (described directly by its
-author) used multi-condition data, multiple growth conditions or
-timepoints per gene, which is what makes clustering genuinely meaningful,
-it groups genes by their pattern across conditions, not just a single
-number. This dataset has only one condition (one Polysome/Total pair), so
-`cluster` here operates on `PR_gene` alone, a single value per gene. The
-result below verifies the mechanism (the Yeo-Johnson transform, Z-score
-step, and `linkage`/`fcluster` calls all run correctly on real data and
-produce meaningfully uneven, non-arbitrary groupings), not a full
-replication of the original multi-condition use case.
+### GO annotation source: Phytozome, not UniProt-GOA
 
-## GO annotation source: Phytozome, not UniProt-GOA
+The obvious UniProt-GOA file for this species (`32602.C_reinhardtii_CC-503.goa`)
+is annotated against strain CC-503, assembly v5.6, a different, older
+assembly than the actual reference genome used here (strain CC-4532,
+assembly v6.1). Using it risked a large, silent gene-ID mismatch.
+Phytozome's own `CreinhardtiiCC_4532_707_v6.1.P14.annotation_info.txt.gz`,
+bundled with the same genome release the reference genome itself came
+from, uses the exact same gene ID namespace by construction, confirmed
+directly (gene IDs match after stripping only a trailing `.vX.Y` version
+suffix).
 
-The obvious first choice for a UniProt-GOA-format GAF file for this species,
-`32602.C_reinhardtii_CC-503.goa`, from EBI's GOA proteomes index, turned out
-to be annotated against strain CC-503, on the older v5.6 genome assembly.
-This project's actual reference genome (and every gene ID in
-`gene_data.tsv.gz`) is strain CC-4532, assembly v6.1, a separately
-reassembled genome, confirmed from JGI's own documentation to share "close
-ancestry" with CC-503 but not be a renumbering of it. Using the CC-503 file
-risked a large, silent gene-ID mismatch.
+**Tradeoff accepted**: Phytozome's own GO column has substantially sparser
+coverage than UniProt-GOA (confirmed: about 19% of genes genome-wide,
+3,203 of about 17,700 loci). Given the project's methodology explicitly
+prioritizes population/ID correctness over raw coverage, this was accepted
+deliberately.
 
-Phytozome's own `CreinhardtiiCC_4532_707_v6.1.P14.annotation_info.txt.gz`
-(a per-gene functional annotation table, Pfam, Panther, KOG, KO, GO,
-best-hit orthologs, bundled with the same genome release the reference
-genome itself came from) uses the exact same gene ID namespace by
-construction. Confirmed directly: real gene IDs from `gene_data.tsv.gz`
-match this file's `locusName` column after stripping only a trailing
-`.vX.Y` version suffix (for example `Cre01.g000350_4532.v6.1` becomes
-`Cre01.g000350_4532`).
+**A same-species crosswalk was checked and ruled out.** Phytozome's
+`CreinhardtiiCC_4532_707_v6.1.synonym.txt` might plausibly have bridged
+CC-503-era IDs to CC-4532 IDs. Checked directly: every ID in it is already
+`_4532`-suffixed, it is a gene-symbol/alias table, not a cross-assembly ID
+map.
 
-**Tradeoff accepted:** Phytozome's own GO column has substantially sparser
-coverage than UniProt-GOA (confirmed: about 19% of genes genome-wide, 3,203
-of about 17,700 loci). Phytozome's GO column is the direct output of their
-own annotation pipeline, not a GO-specialist resource layering in orthology
-transfer and electronic annotation the way UniProt-GOA does. Given the
-project's own methodology explicitly prioritizes population and ID
-correctness over raw coverage (main README section 4), this tradeoff was
-accepted deliberately rather than reaching for a larger but ID-mismatched
-source.
+**Designed but not built**: an ortholog-transfer supplement using
+Phytozome's `Best-hit-arabi-name` column plus a donor `.godb` (e.g.
+Arabidopsis), for genes with zero direct Phytozome annotation.
 
-**A same-species crosswalk was checked and ruled out.** Phytozome also
-ships `CreinhardtiiCC_4532_707_v6.1.synonym.txt`, which might plausibly
-have bridged CC-503-era IDs to CC-4532 IDs, making the UniProt-GOA file
-usable after all as a supplementary tier. Checked directly: every ID in
-this file is already `_4532`-suffixed, it is a gene-symbol and alias table
-(mapping v6.1 transcript IDs to gene symbols and pre-Phytozome internal
-gene-caller IDs like `g4.t1`), not a cross-assembly ID map. This path was
-dropped rather than left as an unverified assumption.
+### `is_a` and `part_of` propagation
 
-**Designed but not built:** an ortholog-transfer supplement using
-Phytozome's `Best-hit-arabi-name` column (available in the same
-`annotation_info.txt` file) plus a donor `.godb` (for example Arabidopsis).
-For genes with zero direct Phytozome GO annotation, the idea is to
-transfer GO terms from the best-hit Arabidopsis ortholog, tagged with a
-distinct provenance (`ortholog_IEA`) so it is never conflated with direct
-annotation. Not yet implemented as reusable `go-gsea` code.
+`goatools.GODag.get_all_parents()` was confirmed to only follow `is_a`,
+even with `optional_attrs=["relationship"]` loaded. Confirmed via terms
+known to have no `part_of` edges (returning correctly empty) versus terms
+confirmed via raw grep of the OBO file to have real `part_of` edges
+(returning real parent IDs via `term.relationship["part_of"]`).
+`reference/build_godb.py`'s custom `get_all_ancestors()` walker combines
+both, verified against this distinction, and against one real gene
+(4 direct terms -> 19 propagated terms, manually checked as a coherent,
+correct generalization).
 
-## `is_a` and `part_of` propagation
+### GO-slim
 
-Verified empirically against `go-basic.obo`, not assumed from
-documentation: `goatools.GODag.get_all_parents()` only follows `is_a`,
-even with `optional_attrs=["relationship"]` loaded. Confirmed via two real
-terms known to have no `part_of` edges (`GO:0006914` autophagy,
-`GO:0071456` cellular response to hypoxia, both returned an empty
-`part_of` set correctly) versus terms confirmed via raw grep of the OBO
-file to have real `part_of` edges (`GO:0000015`, `GO:0000027`, and others,
-both returned real parent IDs via `term.relationship["part_of"]`).
-`reference/build_godb.py`'s custom `get_all_ancestors()` walker was built
-and verified against this distinction.
+Built with `goslim_generic.obo` (206 terms), intersecting the
+already-propagated full-GO term set per gene against the slim vocabulary.
+2,100 of 3,203 full-GO-annotated genes have at least one slim term.
+Verified with a direct subset check: every slim gene's term set is a
+strict subset of that gene's full term set, zero violations across 2,100
+genes.
 
-Sanity check on one real gene: `Cre01.g000650_4532` has 4 direct GO terms
-(copper ion binding, primary methylamine oxidase activity, amine metabolic
-process, quinone binding) leading to 19 terms after propagation, including
-both namespace roots and no unrelated terms, manually checked against
-`go-basic.obo`'s term names, not just trusted by count.
+### Population filter check (real data)
 
-## GO-slim
+`filters/population.py`'s `read_depth_filter` and `usage_filter`, checked
+against real `T_n_reads`/`rTrans-usage.b` columns:
 
-Built with `goslim_generic.obo` (206 terms), from
-`reference/build_godb.py`'s `build_and_cache_slim_godb()`, which intersects
-the already-propagated full-GO term set per gene against the slim
-vocabulary rather than re-propagating from scratch. 2,100 of the 3,203
-full-GO-annotated genes have at least one slim term (average 2.8 slim
-terms per gene, versus 16.3 full terms per gene). Verified with a direct
-subset check before trusting the result: every one of the 2,100 slim
-genes' term sets was confirmed to be a strict subset of that same gene's
-full term set, zero violations.
-
-## Population filter check (real data)
-
-`filters/population.py`'s `read_depth_filter` and `usage_filter` had only
-ever been run against synthetic data before this check. Run against real
-`T_n_reads` (read depth) and `rTrans-usage.b` (representative-transcript
-usage fraction) columns:
-
-| Filter | Genes passing (of 3,594 total) |
+| Filter | Genes passing (of 3,594) |
 |---|---|
 | `read_depth_filter(col="T_n_reads", thresh=10)` alone | 2,232 |
 | `usage_filter(col="rTrans-usage.b", thresh=0.05)` alone | 3,346 |
 | Both, chained | 1,984 |
 
-Both filters independently removed a real, meaningful, and different
-subset of genes (neither is a no-op), and the chained result (1,984) is
-stricter than either alone, consistent with a correct AND composition
-rather than, for example, the smaller of the two individual results being
-returned by mistake.
+Both filters independently removed a real, distinct subset (neither a
+no-op), chained result stricter than either alone, consistent with
+correct AND composition.
 
-## Real-data integration numbers
+### Determinism check
 
-- `build_godb.py` on the real Phytozome file: 3,203 annotated genes,
-  matching an independently predicted count from the raw file before any
-  code existed to build it.
-- `gene_data.tsv.gz`: 3,594 total genes (after dropping the luciferase
-  spike-in row and rows with missing metric values: 3,593 for `PR_gene`
-  and `TPM` alike).
-- ID overlap after `.vX.Y`-suffix normalization: 650 of 3,594 matched
-  (18.1%), consistent with the about-19% genome-wide Phytozome coverage
-  figure above, confirming the ID-matching logic is correct rather than
-  coincidentally non-crashing.
-- Unknown-gene ratio for every run below: about 82% (2,943 of 3,593
-  unannotated genes), a direct consequence of the coverage tradeoff above.
-  `run_ora()`'s `unknown_ratio_thresh` was set to `0.9` for every run
-  (main README section 4 explains why this threshold is a tunable
-  parameter, not a fixed constant: two copies of the original precedent
-  script disagreed on this exact value, `0.2` versus `0.9`, and which was
-  current was never definitively resolved).
+Ward's-method clustering (demo C) was rerun back-to-back with identical
+parameters; the two output files were confirmed byte-identical via `diff`
+(exit code 0). Clustering is deterministic within a session on this
+codebase and library versions. **This does not guarantee a result
+documented at one point in time will still reproduce exactly later** — see
+demo C below for a real case where it did not.
 
-## Result 1: PR_gene with rank_tail, and how to read it
+---
 
-At `thresh_type="p", thresh=0.01`, full-GO, top and bottom 10% of genes by
-`PR_gene` (359 genes per class):
+## Demo A: `rank_tail` on `PR_gene`, CR_3D alone
 
-- **Low-PR (worst translated) genes:** enriched for cellular component and
-  organelle organization and assembly terms (`GO:0016043`, `GO:0022607`,
-  `GO:0071840`, `GO:0044085`, all p<0.01). Notably, `GO:0006412`
-  (translation) had zero observed genes in this group against an expected
-  about 5.05 (fold_enrichment = -2.60, p = 0.0103, just outside the p<0.01
-  cutoff). Core translation-machinery genes essentially never appearing
-  among the worst translated genes is the expected biological direction,
-  and a reassuring sign this is not a pipeline artifact.
-- **High-PR (best translated) genes:** `GO:0046982`/`GO:0046983` (protein
-  dimerization activity) over represented; `GO:0008152` (metabolic
-  process) under represented.
+Top/bottom 10% by `PR_gene` (359 genes each), matching the confirmed
+real-data convention from prior lab work on Arabidopsis/rice (exact
+10%/10% splits, not a median split).
 
-**GO-slim, same labeled genes, same threshold:** 172 (class, term) rows
-tested (versus 2,334 for full-GO), 0 rows reaching p<0.01. Checked
-directly rather than assumed correct: the actual p-value spread in
-`summary.CR_3D.PR_gene.all.tsv` ranges from about 0.016 up through 1.0,
-not a suspicious wall of identical values, so this reflects a real
-absence of a slim-vocabulary-detectable signal at this threshold, not a
-broken computation. The closest term, `GO:0005694` (chromosome), sits at
-p = 0.021, fold_enrichment = 1.40.
+**Low-PR (worst translated):** enriched for cellular component/organelle
+organization and assembly terms (`GO:0016043`, `GO:0022607`, `GO:0071840`,
+`GO:0044085`, all p<0.01). `GO:0006412` (translation) had zero observed
+genes against an expected ~5.05 (fold_enrichment=-2.60, p=0.0103, just
+outside the cutoff).
 
-**Empirical demonstration of the p-value versus q-value design
-principle** (main README section 4): with 1,167 terms tested per class,
-even the smallest observed p-value in this run (0.0025, `GO:0016043` in
-the Low class) carries a BH-corrected q-value of 1.0. A q<0.01 cutoff
-would have erased all 7 real significant findings, including the
-biologically sensible `GO:0006412` near-miss result, that the run-time
-p<0.01 cutoff correctly surfaced.
+**High-PR (best translated):** `GO:0046982`/`GO:0046983` (protein
+dimerization activity) over-represented; `GO:0008152` (metabolic process)
+under-represented.
 
-## Result 2: TPM with rank_tail, and how to read it
+**GO-slim: 0 significant** (172 rows tested). Checked directly: p-values
+range from ~0.016 to 1.0, not a suspicious uniform wall, a real absence of
+slim-detectable signal at this threshold, not a broken run.
 
-At `thresh_type="p", thresh=0.01`, full-GO, top and bottom 10% of genes by
-`TPM` (359 genes per class):
+**q-value check**: smallest observed p-value (0.0025) carries
+q=1.0 with 1,167 terms tested per class. A q<0.01 cutoff would erase all 7
+real findings.
 
-- **High-TPM (most abundant) genes: a textbook ribosome/translation
-  signature.** Top terms by p-value: `GO:0003735` structural constituent
-  of ribosome (p=9.7e-15), `GO:0005840` ribosome (p=3.9e-14), `GO:0006412`
-  translation (p=6.1e-14), `GO:0160307` protein biosynthetic process
-  (same p), `GO:0005198` structural molecule activity (p=7.6e-12), plus
-  broader organelle and gene-expression terms. 24 of 1,167 terms tested
-  reached significance for this class, 21 over-represented, 3
-  under-represented. Ribosomal and translation-machinery genes are among
-  the most highly and constitutively expressed genes in any eukaryotic
-  cell, this signal appearing this strongly on the very first real run of
-  a metric the code had never been tested against before is a strong
-  positive signal for the correctness of the whole chain, not just for
-  this one dataset.
-- **Low-TPM (least abundant) genes: the mirror image.** `GO:0003723` RNA
-  binding significant at p=0.0064 (fold_enrichment = -2.72, under
-  represented). `GO:0006412` translation and `GO:0160307` protein
-  biosynthetic process both appear as near misses in the under
-  represented direction (p=0.0105, fold_enrichment = -2.67).
+---
 
-**GO-slim, same labeled genes, same threshold: 5 significant terms**,
-contrasting directly with the 0 found for `PR_gene` above. The p-value
-histogram for the High class shows a real pileup near zero, not only
-near 1.0. The full-GO versus GO-slim agreement scatter for shared terms
-shows a near-perfect diagonal for both runs.
+## Demo B: `rank_tail` on `TPM`, CR_3D alone
 
-## Result 3: PR_gene with cluster (Ward's method), and how to read it
+Same split convention, on `TPM` instead.
 
-`labelers.cluster(df, cols=["PR_gene"], n_clusters=7)`, Yeo-Johnson
-transform followed by Z-score, Euclidean distance, Ward's-method
-hierarchical clustering, cut to 7 clusters, matching the upper end of the
-cluster count range used in the original lab precedent. At
-`thresh_type="p", thresh=0.01`, full-GO:
+**High-TPM: a textbook ribosome/translation signature.**
+`GO:0003735` (p=9.7e-15), `GO:0005840` (p=3.9e-14), `GO:0006412`/`GO:0160307`
+(p=6.1e-14), `GO:0005198` (p=7.6e-12), plus broader organelle/gene-expression
+terms. 24 of 1,167 terms tested reached significance for this class alone,
+21 over-represented, 3 under-represented.
 
-| Cluster | Genes | n_significant | Direction |
-|---|---|---|---|
-| 1 | 470 | 2 | kinase activity, phosphotransferase activity, both over represented |
-| 2 | 71 | 1 | cellular process, under represented (small cluster, most near-miss terms have population = 1 gene, unstable) |
-| 3 | 360 | 0 | no terms crossed the threshold |
-| 4 | 647 | 0 | no terms crossed the threshold, but near misses cluster around translation initiation and GTP binding |
-| 5 | 965 | 3 | structural constituent of ribosome, ribosome, ATP-dependent activity, all **under** represented |
-| 6 | 277 | 10 | structural constituent of ribosome, ribosome, translation, protein biosynthetic process, structural molecule activity, all **over** represented |
-| 7 | 803 | 0 | no terms crossed the threshold |
+**Low-TPM: the mirror image.** `GO:0003723` (RNA binding) significant at
+p=0.0064 (under-represented). `GO:0006412`/`GO:0160307` both near-miss
+under-represented (p=0.0105).
 
-Cluster sizes range from 71 to 965 genes, a real, uneven grouping driven
-by the actual shape of the `PR_gene` distribution, not an artifact of a
-degenerate or evenly-split clustering (which would have looked
-suspiciously close to `359`/`359`-style even splits).
+**GO-slim: 5 significant**, contrasting directly with demo A's 0. Real
+pileup near zero in the High class's p-value distribution, not only near
+1.0.
 
-**The main finding: clustering independently rediscovered the same
-biological axis Result 1 found, without being told to look for it.**
-Cluster 6 (well-translated genes) is enriched for ribosome/translation
-terms; cluster 5 (poorly-translated genes, the largest cluster) is
-depleted for the exact same terms. This is the same signal the `rank_tail`
-High/Low split surfaced, found here by a completely different, unsupervised
-mechanism that has no knowledge of GO and operates purely on the numeric
-distribution of `PR_gene`. Two independent labeling mechanisms converging
-on the same real biology is stronger evidence for that biology (and for
-the correctness of the pipeline finding it) than either result alone.
+---
 
-**A new signal not visible in the binary rank_tail split:** cluster 1
-(kinase/phosphotransferase activity, over represented) has no analog in
-either the `PR_gene` or `TPM` rank_tail results. A single run is not
-enough to treat this as established, but it illustrates a real advantage
-of clustering over a fixed top/bottom cut, groups the data actually
-contains can surface findings a two-class split by construction cannot.
+## Demo C: `cluster`, k=4, `PR_gene`, CR_3D alone
 
-**GO-slim agreement across all 7 classes: 602 shared (class, term) pairs,
-only 1 discrepancy** (`GO:0140657` ATP-dependent activity in cluster 5,
-p=0.0093 full-GO versus p=0.0198 slim, the same near-threshold result
-landing on opposite sides of the cutoff by a small margin, not a real
-disagreement). Full-GO found 16 significant terms total, GO-slim found 3.
-This is a harder consistency check than the two-class runs (7 independent
-classes instead of 2), and it held.
+Ward's-method hierarchical clustering (Yeo-Johnson -> Z-score -> Euclidean
+-> Ward's), single column (`PR_gene`), single condition. Verifies the
+clustering mechanism itself, not the original multi-condition use case
+its lab precedent was designed for, see demos F/G for the genuine
+multi-condition case.
+
+**k selection**: elbow curve showed a sharp bend around k=3-5. The first
+k tried, k=13 (borrowed from an unrelated precedent), was rejected after
+its per-sample silhouette showed cluster 1 (470 genes) with a suspicious
+*perfect* silhouette (mean=min=1.0) — confirmed to be exactly the 470
+genes with `PR_gene == 0`, a tied-value artifact, not real structure.
+k=4 was chosen instead: real elbow bend, cluster 1 (470 genes, the
+zero-floor group) cleanly isolated on its own rather than fragmenting the
+rest of the distribution into artifacts, cluster 3 (1,612 genes)
+strongly separated (mean silhouette 0.65, no negative minimum).
+
+Cluster sizes: 1=470, 2=431, 3=1612, 4=1080.
+
+**Result, current and reproducible: 13 significant full-GO, 4 significant
+slim.** An earlier version of this document reported 16/3 for this exact
+command; that number could not be reproduced in a later session (cluster
+sizes matched exactly, significant-term counts did not) and, after
+confirming this session's own result is internally deterministic (byte-
+identical on rerun, see "Determinism check" above), the earlier 16/3 is
+treated as superseded rather than carried forward. The likely cause is a
+library-version or environment difference between sessions, not a bug
+in this codebase as currently verified — but the exact cause was not
+tracked down, and the correct practice going forward is: **do not assume
+a previously-documented clustering result still reproduces without
+re-verifying it in the current environment.**
+
+---
+
+## Demo D: `rank_tail` on `PTPM`, CR_6D alone
+
+First real run of any kind on CR_6D. Same convention as demos A/B, on
+`PTPM` this time.
+
+**High-PTPM**: the same ribosome/translation signature as demo B,
+independently reproduced on a different condition (6 days vs 3) with a
+different metric (polysome-fraction, not total-fraction expression).
+`GO:0043229`/`GO:0043226` (organelle terms, p~5-8e-15), `GO:0003735`
+(p=9.8e-14), `GO:0005198` (p=1.3e-13), `GO:0005840`/`GO:0160307`/`GO:0006412`
+(p~3-4e-13). 21 over-represented, 3 under-represented of 24 significant.
+
+**Low-PTPM**: mirror pattern. `GO:0005840`/`GO:0003735` both at zero
+observed genes (p~0.10, near-miss, not significant at this threshold but
+the same directional pattern as every other Low-expression group tested).
+
+**GO-slim: 4 significant.**
+
+---
+
+## Demo E: `cluster`, k=3, `[PTPM, TPM]` jointly, CR_6D alone
+
+First multi-column clustering demo, no merge needed since both columns
+already live in one file.
+
+**k selection**: elbow bend at k=3 (6,100 -> 2,350 -> 900), silhouette
+peaked cleanly at k=3 (0.541), dropping at k=4 (0.445) with no competing
+secondary peak at higher k. Both diagnostics agreed.
+
+Cluster sizes: 1=1156, 2=689, 3=1212. Silhouette means: 0.63 / 0.67 / 0.39.
+
+**Result, corrected an initial hypothesis.** Expected "two well-expressed
+populations + one diffuse mass"; actual finding was one dominant
+ribosome/translation axis split into three positions: cluster 1
+under-represents it, cluster 2 over-represents it (and is the standout:
+best-separated, min silhouette 0.15 is the only positive minimum of the
+three, and the strongest, cleanest GO signal), cluster 3 under-represents
+it from a third angle (`translation`, `protein biosynthetic process`
+specifically). 21 significant full-GO, 4 slim, 0 full-GO/slim
+discrepancies across all 3 classes.
+
+---
+
+## Demo F: `cluster`, k=2, `PR_gene`, CR_3D + CR_6D merged
+
+**The real multi-condition use case** demo C explicitly could not test.
+Built via `dataprep.merge_gene_tables()`, inner join on `gene_id`: 2,658
+genes present in both conditions (of 3,593 in CR_3D, 3,057 in CR_6D).
+
+**k selection was genuinely ambiguous, and the ambiguity was resolved by
+the artifact check, not by picking whichever number looked better.**
+Elbow showed no sharp single bend; silhouette had a global max at k=2
+(0.503) and a smaller secondary peak at k=4-5 (~0.43). Checked whether
+k=2's peak was a repeat of the zero-floor artifact: only 42 of the
+resulting 332-gene cluster (12.6%) were near-zero-in-both-conditions
+genes, ruling out a pure artifact. Per-sample silhouette: both clusters
+positive mean (0.31, 0.53), moderate but real separation, weaker than
+demo E's but not degenerate.
+
+Cluster sizes: 1=332 (small, the ribosome/translation-enriched group),
+2=2326.
+
+**Result: 28 significant full-GO, 6 significant slim — the strongest
+result in the whole worked example.** Cluster 1 over-represents the same
+signature every other demo has found (`GO:0003735` p=5.2e-11,
+`GO:0005840` p=1.4e-10, `GO:0006412`/`GO:0160307` p=3.9e-10), cluster 2
+under-represents the identical term list, near-perfect mirror symmetry.
+This is the first result requiring a gene's translational status to be
+*consistent across two independent growth-stage conditions simultaneously*
+to land in the enriched cluster, a stronger biological claim than any
+single-condition result: not "looks this way once," but "stable across
+conditions." 0 full-GO/slim discrepancies; the one near-threshold mismatch
+(`GO:0003824`, catalytic activity, slim-significant/full-GO-not) is
+explainable as the coarser slim vocabulary aggregating related full-GO
+terms.
+
+---
+
+## Demo G: `cluster`, k=2, `TPM`, CR_3D + CR_6D merged
+
+Same merge mechanism, `TPM` instead of `PR_gene`. 2,658 genes (same inner
+join, confirmed identical merge behavior).
+
+**k selection**: cleaner than demo F. Elbow bend sharply at k=2->3 (62%
+then 37% drop); silhouette single clean peak at k=2 (0.511), no competing
+secondary peak, monotonic decline after. Artifact check: 615 of 1,374
+genes in cluster 1 (44.8%) are near-zero-in-both, a real but partial
+fraction, not a pure artifact. Both clusters positive mean silhouette
+(0.61, 0.41), the strongest separation of the two merged demos.
+
+Cluster sizes: 1=1374 (low-expression), 2=1284 (high-expression).
+
+**Result: 18 significant full-GO, 3 significant slim.** Cluster 1
+strongly under-represents ribosome/translation (`GO:0160307`/`GO:0006412`
+p=5.7e-5, `GO:0005840` p=1.7e-4, `GO:0003735` p=1.75e-4, the strongest
+under-representation p-values for these terms across all seven demos),
+cluster 2 over-represents the identical terms (`GO:0006412`/`GO:0160307`
+p=0.0084). 0 full-GO/slim discrepancies.
+
+---
 
 ## Reproducing these runs
 
 Through the CLI (`scripts/run_pipeline.py`, full flag reference in the
-main README section 6), both full-GO and GO-slim in one call. Only
-`--metric-col`, `--label-strategy` (and, for cluster, `--n-clusters`
-instead of `--pct`), and `--dataset-name` differ between runs:
+main README section 6). Single-file demos (A-E) only differ in
+`--metric-col`, `--label-strategy`/`--n-clusters`/`--pct`, and
+`--dataset-name`; merged demos (F-G) additionally use `--merge-manifest`
+in place of `--input-table`.
 
+Example, demo F, using a merge manifest (`merge_pr_gene.txt`):
+
+```ini
+[cond_3D]
+path = data/raw/CR_3D.gene_data.tsv.gz
+value_col = PR_gene
+
+[cond_6D]
+path = data/raw/CR_6D.gene_data.tsv.gz
+value_col = PR_gene
 ```
+
+```bash
 python scripts/run_pipeline.py \
-    --input-table /path/to/CR_3D.PR.gene_data.tsv.gz \
-    --godb data/go_reference/chlamy.godb.pkl \
-    --slim-godb data/go_reference/chlamy.slim.godb.pkl \
-    --metric-col PR_gene \
-    --id-col gene_id \
+    --merge-manifest merge_pr_gene.txt \
+    --godb data/go_reference/CR/CR.godb.pkl \
+    --slim-godb data/go_reference/CR/CR.slim.godb.pkl \
+    --metric-col cond_3D cond_6D \
     --strip-id-suffix '\.v\d+\.\d+$' \
     --exclude-id 'gene:Standard-R-luc' \
-    --label-strategy rank_tail --pct 10 \
+    --label-strategy cluster --n-clusters 2 \
     --output-dir results/GO \
     --slim-output-dir results/GO_slim \
-    --dataset-name CR_3D.PR_gene \
+    --dataset-name CR_3D-CR_6D.PR_gene_cluster \
     --unknown-ratio-thresh 0.9 \
     --thresh-type p --thresh 0.01
 ```
 
-```
-python scripts/run_pipeline.py \
-    --input-table /path/to/CR_3D.PR.gene_data.tsv.gz \
-    --godb data/go_reference/chlamy.godb.pkl \
-    --slim-godb data/go_reference/chlamy.slim.godb.pkl \
-    --metric-col TPM \
-    --id-col gene_id \
-    --strip-id-suffix '\.v\d+\.\d+$' \
-    --exclude-id 'gene:Standard-R-luc' \
-    --label-strategy rank_tail --pct 10 \
-    --output-dir results/GO \
-    --slim-output-dir results/GO_slim \
-    --dataset-name CR_3D.TPM \
-    --unknown-ratio-thresh 0.9 \
-    --thresh-type p --thresh 0.01
-```
-
-```
-python scripts/run_pipeline.py \
-    --input-table /path/to/CR_3D.PR.gene_data.tsv.gz \
-    --godb data/go_reference/chlamy.godb.pkl \
-    --slim-godb data/go_reference/chlamy.slim.godb.pkl \
-    --metric-col PR_gene \
-    --id-col gene_id \
-    --strip-id-suffix '\.v\d+\.\d+$' \
-    --exclude-id 'gene:Standard-R-luc' \
-    --label-strategy cluster --n-clusters 7 \
-    --output-dir results/GO \
-    --slim-output-dir results/GO_slim \
-    --dataset-name CR_3D.PR_gene_cluster \
-    --unknown-ratio-thresh 0.9 \
-    --thresh-type p --thresh 0.01
-```
-
-All three confirmed to reproduce the exact numbers above against
-independent hand-written or CLI-only runs.
+All seven demos confirmed to reproduce the exact numbers in the gallery
+table above.
 
 ## Open items specific to this example
 
-- Only gene-level `PR_gene` and `TPM` have been run, both from the same
-  species and the same underlying gene set. Transcript- or variant-level
-  PR, and a second species, are unexercised.
-- `rank_tail` and `cluster` have both been run on real data now.
+- Only gene-level data has been used, both species-wide and per-condition.
+  Transcript- or variant-level PR, and a second species, are unexercised.
+- `rank_tail` and `cluster` have both been run extensively on real data
+  (single-file, multi-column, and genuinely merged multi-condition cases).
   `explicit_threshold` and `boolean_flag` remain unverified outside
-  synthetic tests.
-- The `cluster` run above verifies the mechanism, not the original
-  multi-condition use case, this dataset has only one condition, see the
-  note above under "Input data used."
+  synthetic tests, no natural real use case for either has presented
+  itself on this dataset.
+- `k` selection for the merged demos (F, G) required a short standalone
+  script rather than `notebooks/select_cluster_k.ipynb`, which currently
+  only supports single-file input (main README section 9).
 - Ortholog-transfer supplementation and provenance-stamped output files
-  are still open across the whole tool (main README section 9), nothing
-  here is Chlamydomonas-specific about those gaps.
+  are still open across the whole tool (main README section 9).

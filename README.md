@@ -31,7 +31,7 @@ Run the test suite, to confirm everything imports and works on your machine:
 pytest tests/ -v
 ```
 
-Minimal example run. This assumes a `.godb` already built from
+Minimal single-file example run. This assumes a `.godb` already built from
 `reference/build_godb.py` (see section 5) and a gene-level input table
 matching section 2's required shape:
 
@@ -45,10 +45,25 @@ python scripts/run_pipeline.py \
     --dataset-name your_run_name
 ```
 
-This writes `summary.your_run_name.all.tsv` (every GO term tested) and, for
-each class with any significant term, `summary.your_run_name.<class>.over.tsv`
+Multi-source example, for combining several files (e.g. multiple
+conditions of the same species) into one wide table before clustering
+(see `dataprep/merge_tables.py` and section 6):
+
+```bash
+python scripts/run_pipeline.py \
+    --merge-manifest merge_manifest.txt \
+    --godb path/to/your.godb.pkl \
+    --metric-col cond_a cond_b \
+    --label-strategy cluster --n-clusters 2 \
+    --output-dir results/GO \
+    --dataset-name your_merged_run_name
+```
+
+Either form writes `summary.<name>.all.tsv` (every GO term tested) and, for
+each class with any significant term, `summary.<name>.<class>.over.tsv`
 and `.under.tsv` into `results/GO/`. See section 6 for the full flag
-reference, and section 8 for complete, real, worked runs on real data.
+reference, and section 8 for seven complete, real, worked demos on real
+data.
 
 ---
 
@@ -69,10 +84,8 @@ What's different, deliberately:
   Singularity image. This pipeline runs in a plain conda environment.
 - **Class-label generation is a reusable, tested layer**, not one-off notebook
   code rewritten by hand for every new research question. Every precedent
-  notebook inspected during design had its own one-off version of this logic
-  (a top/bottom-percent-by-rank cell, a clustering cell, a threshold-filter
-  cell), none of it reusable as a library, each rewritten from scratch per
-  question.
+  notebook inspected during design had its own one-off version of this logic,
+  none of it reusable as a library.
 - **Every numeric piece has a test**, written against small, hand-checkable
   synthetic data before ever touching real biology. This caught several real
   bugs during development that would otherwise have silently corrupted
@@ -83,48 +96,62 @@ What's different, deliberately:
   organism, see section 4 and the worked example in section 8.
 - **One CLI runs both full-GO and GO-slim in a single call**, writing to
   separate output directories, instead of two duplicated batch files.
-- **Verified on two distinct real metrics and two distinct labeling
-  mechanisms on the same real dataset**, not just one, see section 8. The
-  same unmodified code correctly handled a metric (total-fraction
-  expression) it had never been run against before, producing a
-  textbook-correct biological result on the very first run. Separately, an
-  unsupervised clustering strategy independently rediscovered the same
-  biological signal a simple top/bottom split had already found, without
-  being told to look for it.
+- **A generic multi-source merge primitive** (`dataprep/merge_tables.py`)
+  combines any number of named columns from any number of files into one
+  wide table before labeling, unblocking real multi-condition or
+  multi-technology clustering without any species- or condition-specific
+  code. See section 8, demos 1 and 2.
+- **A plain-text batch driver** (`scripts/run_batch.py`) runs many
+  species/condition/metric combinations from one manifest file, chosen
+  over CSV specifically for ease of hand-editing (see section 6).
+- **Verified on two distinct real metrics, two distinct labeling
+  mechanisms, and both single-file and merged-multi-condition scopes**, all
+  on the same real dataset, not just one. Seven real demos (section 8), all
+  independently converging on the same core biological signal
+  (ribosome/translation-machinery genes), across every one of those axes.
 
 ---
 
 ## 2. Expected input data
 
 `go-gsea` does not read raw sequencing data, alignments, or annotation
-output directly. It expects a single, already-prepared, gene-level (or
-transcript-level, or any other feature-level) table as its starting point.
+output directly. It expects one or more already-prepared, gene-level (or
+transcript-level, or any other feature-level) tables as its starting point.
 Everything upstream of that table, producing it from raw reads, is a
 separate concern.
 
-**Required shape:**
+**Required shape, per input file:**
 
 - Plain or gzipped, tab-separated, one row per gene (or per feature, if
   working at a different level).
-- One column of gene IDs. These IDs must be in the same namespace as
+- One column of gene IDs, consistent across every file if combining more
+  than one (see below). These IDs must be in the same namespace as
   whichever GO annotation source `reference/build_godb.py` is built from
   for that organism (for example, stripped of any version suffix the raw
   gene ID carries, if the annotation source does not carry that suffix).
   ID alignment is checked explicitly, not assumed, before any real run
   (see section 4).
 - One or more numeric or categorical columns to be used as the labeling
-  metric (expression, a ratio like translational efficiency, a boolean
-  motif flag, or anything else). Which column is used, and how, is decided
-  entirely by the caller through `filters/` and `labelers/`, `go-gsea`
-  itself has no fixed expectation of what these columns are named or mean.
-  Note that derived metrics (for example a ratio computed from two other
-  columns in the same table) are not statistically independent of the
-  columns they were derived from, running the pipeline once per related
-  column is not the same as running it on unrelated data, see the worked
+  metric. Which column(s) are used, and how, is decided entirely by the
+  caller through `filters/`, `labelers/`, and, if combining files,
+  `dataprep/merge_tables.py`. `go-gsea` itself has no fixed expectation of
+  what these columns are named or mean. Derived metrics (a ratio computed
+  from two other columns already in the same table) are not statistically
+  independent of the columns they were derived from, see the worked
   example in section 8 for a real case of this.
 
+**Combining multiple files** (e.g. several conditions, several technologies,
+of the same species): `dataprep/merge_tables.py`'s `merge_gene_tables()`
+inner-joins named columns from any number of files on gene ID, keeping only
+genes present in every source, matching the real precedent's own stated
+rule for multi-dataset clustering ("only genes with data available across
+all datasets used in the analysis were selected"). This is the only
+mechanism needed to support any number of species x any number of
+conditions x single-fraction or paired-fraction data, see section 8 for
+worked examples of all of these combinations.
+
 **Where this table typically comes from:** the worked example in this repo
-(`docs/examples/chlamydomonas.md`) uses a gene-level table produced by a
+(`docs/examples/chlamydomonas.md`) uses gene-level tables produced by a
 Nanopore full-length cDNA long-read RNA-seq processing pipeline
 (`Longread_pipeline`, a separate, species-agnostic wet-processing pipeline
 that turns raw FASTQ into an annotated per-gene/per-transcript table).
@@ -151,31 +178,47 @@ go-gsea/
 ├── environment.yml
 ├── pytest.ini
 ├── reference/          species-agnostic GO database construction,
-│                        including the full-GO and GO-slim builders
+│                        full-GO and GO-slim builders
 ├── filters/             Stage A: population-eligibility filters
-├── labelers/             Stage B: class-assignment strategies
-├── enrichment/             statistical engine (ORA) plus output writing
-├── scripts/                 CLI entry point: run_pipeline.py (section 6)
-├── notebooks/                 exploration only, never writes results here
-├── tests/                       one test file per module
+├── labelers/             Stage B: class-assignment strategies, including
+│                          k-selection diagnostics for cluster
+├── dataprep/               generic multi-source table merge
+├── enrichment/               statistical engine (ORA) plus output writing
+├── scripts/                    CLI entry points: run_pipeline.py,
+│                                 run_batch.py (section 6)
+├── notebooks/                    exploration only, never writes results
+├── tests/                          one test file per module
 ├── docs/
-│   └── examples/                    worked examples, e.g. chlamydomonas.md
+│   └── examples/                        worked examples, chlamydomonas.md
 ├── data      -> (symlink to a confidential location, see below)
 └── results   -> (symlink to the same confidential location, see below)
 ```
 
-**Confidential data/results location, pointed to by the two symlinks above:**
+**Confidential data/results location, pointed to by the two symlinks above,
+organized per species:**
 
 ```
 <confidential project folder>/
 ├── data/
-│   ├── raw/                     copies of input gene-level tables
-│   └── go_reference/             go-basic.obo, a GO-slim obo, the GO
-│                                  annotation source, and the cached
-│                                  full and slim .godb files
+│   ├── raw/
+│   │   ├── <SPECIES>_<CONDITION>.gene_data.tsv.gz
+│   │   └── ...                       (one file per species+condition)
+│   └── go_reference/
+│       ├── go-basic.obo                shared, species-agnostic
+│       ├── goslim_generic.obo           shared, species-agnostic
+│       ├── <SPECIES_1>/
+│       │   ├── <SPECIES_1>.annotation_info.txt.gz  (or GAF, whichever
+│       │   │                            source was verified right, see
+│       │   │                            section 4)
+│       │   ├── <SPECIES_1>.godb.pkl
+│       │   └── <SPECIES_1>.slim.godb.pkl
+│       └── <SPECIES_2>/  ...
 └── results/
     ├── GO/                        full-GO enrichment output
-    └── GO_slim/                    GO-slim enrichment output
+    │   ├── summary.<SPECIES>_<CONDITION>.<metric>.all.tsv
+    │   └── summary.<SPECIES>_<COND_A>-<COND_B>.<metric>_cluster.all.tsv
+    │        (merged multi-condition run naming)
+    └── GO_slim/                    same naming, GO-slim output
 ```
 
 `.gitignore` excludes both symlink targets by name, with no trailing slash.
@@ -193,80 +236,59 @@ about.
 
 - **Population = every gene actually analyzable for that specific question,
   never "all genes in the genome" or a population borrowed from a different
-  analysis.** A population that has already been filtered by some
-  detectability or depth criterion is, by construction, not a random sample
-  of the genome, comparing it against a raw genome-wide background creates
-  systematic, directional bias in the result, not just extra noise. This is
-  enforced mechanically, not just by convention:
+  analysis.** Enforced mechanically:
   `enrichment.ora.restrict_to_annotated_genes()` drops genes with zero GO
-  annotation from the population before any counting happens, matching the
-  precedent's own `population_list` construction. Skipping this step was an
-  actual bug caught during development (see section 7), it silently
-  inflated every population/expected-count denominator with genes that
-  could never contribute to any term's count. The population-eligibility
-  filters in `filters/population.py` (read-depth, usage-fraction, minimum
-  group size) implement the same principle one stage earlier, before class
-  labeling even happens, verified on real data by chaining a real read-depth
-  and a real usage-fraction filter and confirming both did real,
-  independent, non-trivial work rather than one dominating or either being
-  a no-op (see the worked example in section 8).
+  annotation from the population before any counting happens. The
+  population-eligibility filters in `filters/population.py` implement the
+  same principle one stage earlier, verified on real data. For merged,
+  multi-file runs, `dataprep.merge_tables.merge_gene_tables()`'s default
+  inner join implements the same principle at the merge stage: a gene not
+  present in every source file is not part of the population at all,
+  matching the real precedent's own stated rule for multi-dataset
+  clustering.
 - **Both `is_a` and `part_of` relationships must be propagated for correct
   GO term inheritance.** `goatools`'s own `GODag.get_all_parents()` was
   empirically confirmed to only follow `is_a`, silently omitting `part_of`
   edges even when `optional_attrs=["relationship"]` is loaded.
   `reference/build_godb.py` implements its own `get_all_ancestors()` walker
   combining both, verified against real terms with confirmed `part_of`
-  edges. This applies to any OBO-format ontology, not a species-specific
-  concern.
+  edges.
 - **GO-slim is a filter on top of full-GO propagation, not a separate
-  propagation pass.** `reference/build_godb.py`'s `build_slim_godb()` takes
-  the already fully-propagated gene to GO term map and intersects it
-  against whichever terms exist in a slim ontology (206 terms in
-  `goslim_generic.obo`, versus 41,378 in the full ontology). Verified on
-  real data with a direct subset check: every gene's slim term set must be
-  a strict subset of that same gene's full term set, confirmed with zero
-  violations across 2,100 genes before this was trusted.
+  propagation pass.** Verified on real data with a direct subset check:
+  every gene's slim term set must be a strict subset of that same gene's
+  full term set, confirmed with zero violations before this was trusted.
+  Verified consistent across every real run in section 8, including
+  3-class and multi-condition cases, not just the original 2-class case.
 - **Significance threshold: p < 0.01, uncorrected, is the default, not
-  BH-corrected q-value.** Standard multiple-testing practice would suggest
-  q-value/FDR correction. The precedent lab's own documented reasoning: GO
-  enrichment run repeatedly (once per class, or once per cluster) compounds
-  the multiple-testing problem beyond what standard FDR correction assumes;
-  GO terms have parent-child dependencies that violate the independence
-  assumption FDR correction relies on, so even a "corrected" q-value is not
-  fully accurate; and q-values are unstable across reruns for reasons
-  unrelated to the actual data under test (they shift with how many other
-  GO terms happen to be in the annotation file, or how many classes are
-  being compared), while p-values do not have this instability. Both p and
-  q are always computed and reported regardless of which is used as the
-  cutoff, `thresh_type`/`thresh` are run-time parameters, not hardcoded.
-  Confirmed concretely on real data, not just argued abstractly: with 1,167
-  terms tested per class in a real run, the smallest observed p-value
-  (0.0025) still carries a BH-corrected q-value of 1.0, a q<0.01 cutoff
-  would have erased every real significant finding the run-time p<0.01
-  cutoff correctly surfaced. Language constraint that follows from the same
-  reasoning: results at this threshold should be described as genes that
-  "tended to include" a GO term, not as "statistically significant"
-  findings, since no multiple-testing correction is applied.
-- **A GO-slim run producing zero significant terms is not automatically a
-  sign of correctness or of a bug**, check the actual p-value spread in the
-  "all" output file before concluding either way, a coarse vocabulary can
-  legitimately fail to isolate a real, narrower signal. Confirmed with
-  multiple contrasting real runs from the same pipeline, same code, same
-  species: one real metric produced zero significant GO-slim terms with a
-  p-value distribution showing no real pileup near zero (a genuine absence
-  of a slim-detectable signal), while other real runs on the same genes
-  produced several significant GO-slim terms each, with p-value
-  distributions clearly piled up near zero for the enriched classes. The
-  same mechanism, tested repeatedly on real data with different outcomes
-  each time, is stronger evidence the slim code path itself is correct
+  BH-corrected q-value.** The precedent lab's own documented reasoning:
+  repeated testing across classes compounds the multiple-testing problem
+  beyond what standard FDR correction assumes; GO terms have parent-child
+  dependencies that violate the independence assumption FDR correction
+  relies on; and q-values are unstable across reruns for reasons unrelated
+  to the actual data under test, while p-values are not. Confirmed
+  concretely on real data: with over a thousand terms tested per class, the
+  smallest observed p-values still carry BH-corrected q-values of 1.0 in
+  every real run so far, a q<0.01 cutoff would have erased every real
+  significant finding these runs correctly surfaced. Language constraint
+  that follows from the same reasoning: results at this threshold should be
+  described as genes that "tended to include" a GO term, not as
+  "statistically significant" findings.
+- **A GO-slim run producing zero (or very few) significant terms is not
+  automatically a sign of correctness or of a bug**, check the actual
+  p-value spread in the "all" output file before concluding either way.
+  Confirmed with multiple contrasting real runs, same code, same species,
+  same GO-slim mechanism: some real metrics produce zero significant
+  GO-slim terms with no real pileup near zero in the p-value distribution
+  (a genuine absence of a slim-detectable signal), while other real runs on
+  the same genes produce several, with a clear pileup near zero. The same
+  mechanism tested repeatedly on real data with different, data-dependent
+  outcomes each time is stronger evidence the slim code path is correct
   than any single result alone.
 - **`fold_enrichment` direction is computed independently of `scipy`'s
-  Fisher's exact `odds_ratio`,** not derived from it. `odds_ratio`'s
+  Fisher's exact `odds_ratio`,** not derived from it, since `odds_ratio`'s
   sign and magnitude depend on which row of the 2x2 table is "row 0," an
   orientation-dependent convention that caused real test failures during
-  development. The precedent's own `log2((observed+1)/(expected+1))`
-  formula sidesteps this entirely and is more directly interpretable
-  regardless of table construction order.
+  development.
 - **The GO annotation source must be chosen for correct gene-ID alignment
   with the specific reference genome in use, never assumed generically.**
   The obvious choice (a general-purpose GAF, for example from UniProt-GOA)
@@ -274,34 +296,45 @@ about.
   or assembly version than the actual reference genome a project uses,
   causing a large, silent ID mismatch. The correct source is whichever
   file's gene ID namespace was built from the same reference genome release
-  the rest of the analysis uses, confirmed by direct ID-overlap testing, not
-  assumed. See the worked example in section 8 for how this played out for
-  one real case, including a same-species crosswalk file that turned out
-  not to bridge two assembly versions once actually checked.
+  the rest of the analysis uses, confirmed by direct ID-overlap testing,
+  not assumed. See the worked example in section 8 for how this played out
+  for one real case, including a same-species crosswalk file that turned
+  out not to bridge two assembly versions once actually checked.
 - **An unknown-gene-ratio guard should exist, but its threshold is a
-  tunable parameter, not a fixed constant.** How much of a gene list is
-  expected to fall outside the chosen GO annotation source's coverage
-  varies enormously by species and by annotation source (a sparse,
-  high-ID-confidence source versus a broad, lower-confidence one).
-  `run_ora(..., unknown_ratio_thresh=...)` exposes this as an argument for
-  exactly this reason.
-- **A derived metric (a ratio, a difference, or any other transformation
-  of other columns already present in the same table) is not an
-  independent second question**, even when it produces a genuinely
-  different GO enrichment result. Running the pipeline on both a base
-  metric and something derived from it is a useful, real check that the
-  pipeline generalizes across different label distributions, but it should
-  not be presented as evidence of independent validation on two unrelated
-  questions, see the worked example in section 8.
-- **Different labeling mechanisms on the same metric converging on the
-  same biological signal is stronger evidence than either mechanism's
-  result alone.** A fixed top/bottom percentage split and an unsupervised
-  clustering approach are different in kind, one imposes a class boundary
-  by construction, the other discovers groupings purely from the data's own
-  distribution. When both independently surface the same enriched GO terms
-  for the same underlying biology, that convergence is meaningful evidence
-  the pipeline is finding something real, not an artifact of one
-  particular labeling choice, see the worked example in section 8.
+  tunable parameter, not a fixed constant.** `run_ora(...,
+  unknown_ratio_thresh=...)` exposes this as an argument for exactly this
+  reason, since expected annotation coverage varies enormously by species
+  and by annotation source.
+- **A derived metric is not an independent second question**, even when it
+  produces a genuinely different GO enrichment result. Running the pipeline
+  on both a base metric and something derived from it is a useful,
+  real check of generalization, not evidence of independent validation on
+  two unrelated questions, see the worked example in section 8.
+- **Different labeling mechanisms converging on the same biological
+  signal is stronger evidence than either mechanism's result alone.** A
+  fixed top/bottom percentage split and an unsupervised clustering approach
+  are different in kind. When both, independently, surface the same
+  enriched GO terms for the same underlying biology, that convergence is
+  meaningful evidence the pipeline is finding something real, not an
+  artifact of one particular labeling choice. Confirmed repeatedly across
+  the worked example's seven real demos (section 8).
+- **Real clustering runs should be checked for tied-value artifacts before
+  a chosen k is trusted, not just by looking at the elbow/silhouette
+  curves in isolation.** A cluster with a suspiciously perfect (or
+  near-perfect) mean/min silhouette score is worth checking directly
+  against known floor effects in the data (e.g. many genes tied at exactly
+  zero after a transform) before concluding real structure was found, this
+  caught a real, otherwise-invisible artifact during development (see the
+  worked example, section 8). A moderate cluster count with no
+  artifact is more trustworthy than a larger one that scores better only
+  because it isolates a tied-value block as its own "cluster."
+- **Ward's-method clustering, as implemented here, has been verified
+  deterministic within a session** (byte-identical output across repeated
+  runs on the same real data), but results from before a given session, or
+  produced under different library versions, should not be assumed to
+  reproduce exactly without re-verifying, see the worked example (section
+  8) for a real case where an earlier documented result could not be
+  reproduced and was corrected rather than carried forward silently.
 
 ---
 
@@ -318,6 +351,10 @@ flowchart TD
         B2 -->|"intersect with slim<br/>term set"| C2[("cached slim .godb")]
     end
 
+    subgraph MERGE["dataprep/ -- multi-source combining, optional"]
+        M1["merge_gene_tables()<br/>N sources -> one wide table,<br/>inner join on gene_id"]
+    end
+
     subgraph FILT["filters/ -- Stage A: population eligibility"]
         D1[read_depth_filter]
         D2[usage_filter]
@@ -331,7 +368,9 @@ flowchart TD
         E1["rank_tail<br/>top/bottom N%"]
         E2[explicit_threshold]
         E3[boolean_flag]
-        E4["cluster<br/>Yeo-Johnson + Ward's method"]
+        E4["cluster<br/>Yeo-Johnson + Ward's method,<br/>1 or more columns"]
+        E5["elbow_curve, silhouette_scores,<br/>sample_silhouette<br/>(k-selection diagnostics)"]
+        E5 -.informs.-> E4
     end
 
     subgraph ORA["enrichment/ -- statistical engine"]
@@ -348,15 +387,18 @@ flowchart TD
         F6 --> F7[write_results]
     end
 
-    G[("Raw gene-level table<br/>any species, any metric")] --> D4
+    G[("One or more gene-level tables<br/>any species, any metric")] --> M1
+    G --> D4
+    M1 --> D4
     D4 -->|eligible population| LAB
     LAB -->|"labeled_df<br/>(gene_id, class)"| F1
     C1 --> F1
     C2 --> F1
     F7 --> H[("results/GO/ and results/GO_slim/<br/>summary.*.all.tsv,<br/>summary.*.<class>.over/under.tsv")]
-    S["scripts/run_pipeline.py<br/>(single CLI, ties everything above together,<br/>see section 6)"]
+    S["scripts/run_pipeline.py (single or merged run)<br/>scripts/run_batch.py (many runs from one manifest)<br/>see section 6"]
 
     classDef refNode fill:#9CC3D5,stroke:#0F2A3D,stroke-width:2px,color:#0F2A3D,font-weight:bold;
+    classDef mergeNode fill:#C9A96E,stroke:#5C4419,stroke-width:2px,color:#3A2E10,font-weight:bold;
     classDef filtNode fill:#E39A5D,stroke:#5C2E12,stroke-width:2px,color:#3A1D0C,font-weight:bold;
     classDef labNode fill:#E8D3A0,stroke:#6B5527,stroke-width:2px,color:#3A2E12,font-weight:bold;
     classDef oraNode fill:#B7BE8D,stroke:#4A4D2E,stroke-width:2px,color:#2C2E1B,font-weight:bold;
@@ -364,13 +406,15 @@ flowchart TD
     classDef cliNode fill:#3A1D0C,stroke:#E39A5D,stroke-width:2px,color:#FFFFFF,font-weight:bold;
 
     class A1,A2,A3,B1,B2,C1,C2 refNode;
+    class M1 mergeNode;
     class D1,D2,D3,D4 filtNode;
-    class E1,E2,E3,E4 labNode;
+    class E1,E2,E3,E4,E5 labNode;
     class F1,F2,F3,F4,F5,F6,F7 oraNode;
     class G,H dataNode;
     class S cliNode;
 
     style REF fill:#1B3A52,stroke:#9CC3D5,stroke-width:2px,color:#FFFFFF;
+    style MERGE fill:#5C4419,stroke:#C9A96E,stroke-width:2px,color:#FFFFFF;
     style FILT fill:#5C2E12,stroke:#E39A5D,stroke-width:2px,color:#FFFFFF;
     style LAB fill:#6B5527,stroke:#E8D3A0,stroke-width:2px,color:#FFFFFF;
     style ORA fill:#4A4D2E,stroke:#B7BE8D,stroke-width:2px,color:#FFFFFF;
@@ -380,57 +424,110 @@ flowchart TD
 
 Every module in this diagram is real, tested code, see section 7 for test
 counts, except `reference/build_godb.py` which is verified against real
-data instead (also section 7). Nothing in `filters/` or `labelers/` knows
-what any specific metric or species means, that knowledge lives entirely
-in whatever calls them, currently `scripts/run_pipeline.py` (section 6) or
-a hand-written script.
+data instead (also section 7). Nothing in `filters/`, `labelers/`, or
+`dataprep/` knows what any specific metric or species means, that
+knowledge lives entirely in whatever calls them, currently
+`scripts/run_pipeline.py`/`scripts/run_batch.py` (section 6) or a
+hand-written script.
 
 ---
 
 ## 6. CLI reference
 
-`scripts/run_pipeline.py` is the single entry point tying `reference/`,
-`filters/`, `labelers/`, and `enrichment/` together. It knows nothing
-about any specific species or metric, every organism- or question-specific
-detail below is a flag, not a hardcoded assumption.
+### `scripts/run_pipeline.py`
 
-**Input and reference:**
+The single entry point tying `reference/`, `dataprep/`, `filters/`,
+`labelers/`, and `enrichment/` together for one run. It knows nothing
+about any specific species or metric, every organism- or
+question-specific detail below is a flag or a manifest file, not a
+hardcoded assumption.
+
+**Input source (exactly one required):**
+
+| Flag | Meaning |
+|---|---|
+| `--input-table` | Path to a single gene-level TSV, plain or `.gz` |
+| `--merge-manifest` | Path to a plain-text, INI-style manifest listing multiple source files to merge into one wide table first (see below). Mutually exclusive with `--input-table` |
+
+**Merge manifest format** (used with `--merge-manifest`), one `[section]`
+per source, section name becomes the merged table's column name:
+
+```ini
+[cond_a]
+path = data/raw/species_condA.gene_data.tsv.gz
+value_col = PR_gene
+
+[cond_b]
+path = data/raw/species_condB.gene_data.tsv.gz
+value_col = PR_gene
+```
+
+Required keys per section: `path`, `value_col`. With this manifest,
+`--metric-col cond_a cond_b` picks up the merged columns directly.
+
+**Reference and ID handling:**
 
 | Flag | Required | Meaning |
 |---|---|---|
-| `--input-table` | yes | Path to a gene-level TSV, plain or `.gz` (see section 2) |
 | `--godb` | yes | Path to a cached full `.godb` from `reference/build_godb.py` |
 | `--slim-godb` | no | Path to a cached slim `.godb`. If given, also runs GO-slim enrichment |
-| `--id-col` | no, default `gene_id` | Gene ID column name in the input table |
-| `--strip-id-suffix` | no | Regex stripped from gene IDs before matching against the godb (for example a trailing version suffix). Applied BEFORE `--exclude-id`, see that flag below |
-| `--exclude-id` | no, repeatable | Gene ID(s) to drop before labeling (for example a spike-in control). Applied AFTER `--strip-id-suffix`, if both flags are used, give the already-stripped form of the ID here, not the raw one, or the exclusion will silently fail to match |
+| `--id-col` | no, default `gene_id` | Gene ID column name |
+| `--strip-id-suffix` | no | Regex stripped from gene IDs before matching against the godb. Applied BEFORE `--exclude-id`; with `--merge-manifest`, applied to the merged result |
+| `--exclude-id` | no, repeatable | Gene ID(s) to drop before labeling (e.g. a spike-in control). Applied AFTER `--strip-id-suffix`, give the already-stripped form if both are used |
 
 **Labeling (Stage B, see `labelers/labelers.py`):**
 
 | Flag | Meaning |
 |---|---|
-| `--metric-col` | Required. Column in the input table to label genes by |
+| `--metric-col` | Required, one or more values. `rank_tail`/`explicit_threshold`/`boolean_flag` each require exactly one. `cluster` accepts one or more (a single column for 1D clustering, several for a joint/multi-condition clustering) |
 | `--label-strategy` | Required. One of `rank_tail`, `explicit_threshold`, `boolean_flag`, `cluster` |
 | `--pct` | Used by `rank_tail`. Percent for each tail, default 10 |
 | `--high-thresh`, `--low-thresh` | Used by `explicit_threshold` |
-| `--n-clusters` | Used by `cluster` |
+| `--n-clusters` | Used by `cluster`. Should be chosen using the diagnostics in `notebooks/select_cluster_k.ipynb`, not guessed, see section 4 |
 
 **Enrichment and output:**
 
 | Flag | Meaning |
 |---|---|
 | `--output-dir` | Required. Where full-GO results are written |
-| `--slim-output-dir` | Required if `--slim-godb` is given. Where GO-slim results are written |
-| `--dataset-name` | Required. Used to name output files, for example `summary.<dataset_name>.all.tsv` |
-| `--unknown-ratio-thresh` | Default 0.9. Raises an error above this fraction of unrecognized gene IDs (see section 4) |
-| `--thresh-type` | `p` or `q`, default `p` (see section 4 for why) |
+| `--slim-output-dir` | Required if `--slim-godb` is given |
+| `--dataset-name` | Required. Used to name output files |
+| `--unknown-ratio-thresh` | Default 0.9 |
+| `--thresh-type` | `p` or `q`, default `p` |
 | `--thresh` | Default 0.01 |
 
-Complete real invocations, on two distinct real metrics and two distinct
-labeling mechanisms, all on the same dataset, are shown in
-`docs/examples/chlamydomonas.md` (section 8), along with confirmation
-that the CLI reproduces the exact same numbers as independent
-hand-written runs.
+### `scripts/run_batch.py`
+
+Batch driver for running many `run_pipeline.py` invocations from one
+plain-text manifest, chosen over CSV for ease of hand-editing: no column
+alignment, no blank cells for fields that don't apply to a given run,
+comments supported, each run's settings visually grouped:
+
+```ini
+[CR_3D_PR_gene]
+species = CR
+condition = 3D
+input_table = data/raw/CR_3D.gene_data.tsv.gz
+godb = data/go_reference/CR/CR.godb.pkl
+metric_col = PR_gene
+label_strategy = rank_tail
+pct = 10
+```
+
+Required keys per section: `species`, `condition`, `input_table`, `godb`,
+`metric_col`, `label_strategy`. `dataset_name`, if omitted, is
+auto-derived as `<species>_<condition>.<metric_col>`. One section failing
+(bad file, bad reference) does not stop the rest of the batch. Run with:
+
+```bash
+python scripts/run_batch.py manifest.txt
+python scripts/run_batch.py manifest.txt --dry-run   # preview without executing
+```
+
+Seven complete, real invocations covering both single-file and merged
+scopes are shown in `docs/examples/chlamydomonas.md` (section 8), along
+with confirmation that each reproduces the exact same numbers as an
+independent hand-written or by-hand-verified run.
 
 ---
 
@@ -442,14 +539,18 @@ configured).
 
 | Module | Tests | Notes |
 |---|---|---|
-| `filters/population.py` | 7 | Synthetic tests include a composed multi-filter interaction test. Also verified against real data (see section 8): a real read-depth filter and a real usage-fraction filter were confirmed to each independently remove a meaningful, distinct subset of genes, with the chained result stricter than either alone |
-| `labelers/labelers.py` | 8 | `cluster()`'s Yeo-Johnson step returns a `(array, lambda)` tuple from `scipy`, not just an array, caught here, not in production. `cluster()` is also verified against real data (see section 8), producing a genuinely uneven, non-arbitrary grouping that independently rediscovered a biological signal a separate labeling strategy had already found |
-| `enrichment/ora.py` | 23 | Includes the `restrict_to_annotated_genes` population-correctness fix, verified with a dedicated test that a term's `population` count reflects only annotated genes, not the full input |
-| `enrichment/output.py` | 5 | Covers the all/over/under file split, that empty over or under files are skipped rather than written empty, and that a missing output directory is created rather than erroring |
-| `scripts/run_pipeline.py` | 6 | Real subprocess-based CLI tests against synthetic data (not real Chlamydomonas files, kept fast and self-contained). Covers output-file writing, optional GO-slim, missing-required-flag errors, and a real gotcha caught here: `--strip-id-suffix` is applied before `--exclude-id`, so an unstripped ID passed to `--exclude-id` silently fails to match |
-| `reference/build_godb.py` | Not unit-tested; verified against real data instead (see section 8) | Both the `is_a`/`part_of` propagation gap and the slim intersection's subset property were caught and confirmed via direct interactive verification, not a formal test suite |
+| `filters/population.py` | 7 | Includes a composed multi-filter interaction test. Also verified against real data (section 8) |
+| `labelers/labelers.py` | 12 | 8 for the four labeling strategies, plus 4 for the k-selection diagnostics (`elbow_curve`, `silhouette_scores`, `sample_silhouette`), all verified on real data too (section 8), including a real correction of an initially wrong k choice |
+| `enrichment/ora.py` | 23 | Includes the `restrict_to_annotated_genes` population-correctness fix |
+| `enrichment/output.py` | 5 | Covers the all/over/under file split |
+| `dataprep/merge_tables.py` | 9 | Covers the inner-join default, an explicit outer-join option, gzip support, and duplicate/missing-column guardrails |
+| `scripts/run_pipeline.py` (core) | 6 | Real subprocess-based CLI tests against synthetic data |
+| `scripts/run_pipeline.py` (`--metric-col` widening) | 9 | Validates single- vs multi-column strategy requirements at both the function and CLI level |
+| `scripts/run_pipeline.py` (`--merge-manifest`) | 5 | Confirms mutual exclusivity with `--input-table`, and that the inner-join default holds through the full CLI path |
+| `scripts/run_batch.py` | 11 | Plain-text manifest parsing plus real multi-section batch execution, including the one-bad-section-does-not-stop-the-rest behavior |
+| `reference/build_godb.py` | Not unit-tested; verified against real data instead (section 8) | The `is_a`/`part_of` propagation gap and the slim intersection's subset property were both caught via direct interactive verification |
 
-All 49 automated tests pass as of the last real-data integration run.
+**87 automated tests, all passing.**
 
 ---
 
@@ -459,26 +560,22 @@ Real, end-to-end applications of this pipeline, showing how the general
 principles in section 4 play out for a specific organism, dataset, and
 research question. These are examples, not specifications, a different
 organism, condition, or question may reasonably make different choices at
-each decision point (annotation source, filter thresholds, labeling
-strategy), following the same principles.
+each decision point, following the same principles.
 
 - **[`docs/examples/chlamydomonas.md`](docs/examples/chlamydomonas.md)**,
-  *Chlamydomonas reinhardtii*. Three real runs on the same gene set: a
-  translational-efficiency ratio (Polysome Ratio, PR) with a top/bottom
-  percentage split, total-fraction expression (TPM) with the same
-  strategy, and PR again with unsupervised Ward's-method clustering
-  instead. Covers annotation-source selection under a strain/assembly
-  mismatch, real coverage/ID-overlap numbers, a real population-filter
-  check on real depth/usage columns, a real full-GO and GO-slim comparison
-  for each run with contrasting outcomes, an independent rediscovery of
-  the same biological signal by two different labeling mechanisms, and
-  confirmation that the CLI reproduces the same results as independent
-  hand-written runs.
+  *Chlamydomonas reinhardtii*. Seven real demos across two growth-stage
+  conditions (3 and 6 days), three metrics (PR_gene, TPM, PTPM), both
+  labeling strategies with real precedent (`rank_tail`, `cluster`), and
+  both single-file and genuine merged-multi-condition scopes. Every demo
+  independently converges on the same core biological signal
+  (ribosome/translation-machinery genes), across every one of those axes,
+  the strongest form of evidence this project has produced that the
+  pipeline is finding something real.
 
-Additional examples (a different condition on the same species, a different
-species entirely, a non-expression-based labeling strategy) belong here as
-separate files as they are built, each documenting its own specific
-choices without altering the general principles in section 4.
+Additional examples (a different species, a non-expression-based labeling
+strategy) belong here as separate files as they are built, each
+documenting its own specific choices without altering the general
+principles in section 4.
 
 ---
 
@@ -486,27 +583,26 @@ choices without altering the general principles in section 4.
 
 - **Ortholog-transfer GO supplementation is designed, not built.** For
   organisms or genes with sparse direct GO annotation, transferring GO
-  terms from a best-hit ortholog in a better-annotated species (using a
-  donor `.godb`) is a documented option in the worked example but not yet
-  implemented as reusable code, and would need its own provenance tagging
-  so transferred annotations are never conflated with direct ones.
+  terms from a best-hit ortholog in a better-annotated species is a
+  documented option in the worked example but not yet implemented as
+  reusable code.
 - **`gseapy` is an unused dependency.** Installed for a future ranked/GSEA
-  mode (useful for continuous metrics, avoiding an arbitrary top/bottom
-  cutoff entirely), but no code path uses it yet.
-- **No provenance-stamping on output files.** The precedent's output files
-  carry a JSON metadata footer (script version, package versions, run
-  date), useful for reproducibility. `write_results()` writes plain TSVs
-  without this footer.
-- **Both real metrics and both tested labeling strategies come from one
-  species, one gene set.** `PR_gene` and `TPM` are both gene-level columns
-  from the same Chlamydomonas dataset, and `PR_gene` is derived from `TPM`
-  (see section 8), not statistically independent of it. `rank_tail` and
-  `cluster` have both been run on real data, `explicit_threshold` and
-  `boolean_flag` have not. Transcript- or variant-level data, and a second
-  species, are also unexercised. The `cluster` run additionally only
-  verifies the mechanism, not the original multi-condition use case its
-  precedent was designed for, this dataset has only one condition (see
-  section 8).
+  mode, no code path uses it yet.
+- **No provenance-stamping on output files.** `write_results()` writes
+  plain TSVs without the JSON metadata footer the precedent's own output
+  carried (script version, package versions, run date).
+- **`scripts/check_id_overlap.py` (ID-verification for a new species'
+  candidate GO annotation source) is not built.** The check has been done
+  by hand, correctly, for Chlamydomonas, but is not yet a reusable script.
+- **All seven real demos are gene-level, one species, two conditions.**
+  `explicit_threshold` and `boolean_flag` remain unverified outside
+  synthetic tests, no real use case for either has presented itself on
+  this dataset yet. Transcript- or variant-level data, and a second
+  species, are also unexercised.
+- **`notebooks/select_cluster_k.ipynb` only reads a single input file.**
+  k-selection diagnostics for a merged, multi-condition run currently
+  require a short standalone script instead (shown in the worked example),
+  not the notebook's normal interactive workflow.
 - **Commit history is intentionally terse.** This README (and the worked
   examples it links to), not the commit log, is the authoritative record
   of what changed and why.
