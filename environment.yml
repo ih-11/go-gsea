@@ -18,3 +18,4 @@ dependencies:
   - pip:
       - goatools==1.6.4
       - gseapy==1.2.1
+      - matplotlib-venn==1.1.1
