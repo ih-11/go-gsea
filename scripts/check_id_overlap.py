@@ -2,21 +2,34 @@
 """
 scripts/check_id_overlap.py
 
-Formalizes a real, high-stakes manual check performed by hand for
-Chlamydomonas: before trusting a candidate GO annotation source for a new
-species, confirm its gene ID namespace actually overlaps with the real
-gene table's IDs. This exact check caught a real strain/assembly mismatch
-(UniProt-GOA's CC-503/v5.6 file versus the actual CC-4532/v6.1 reference
-genome, see docs/examples/chlamydomonas.md) before it could silently
-corrupt every downstream GO enrichment result.
+Formalizes two real, high-stakes manual checks performed by hand for
+Chlamydomonas, both bundled into one report here:
+
+1. NAMESPACE ALIGNMENT: does the candidate annotation file's gene IDs
+   actually overlap with your real gene table's IDs at all? This exact
+   check caught a real strain/assembly mismatch (UniProt-GOA's
+   CC-503/v5.6 file versus the actual CC-4532/v6.1 reference genome, see
+   docs/examples/chlamydomonas.md) before it could silently corrupt every
+   downstream GO enrichment result.
+
+2. GO COVERAGE (optional, via --annotation-go-col): of the genes that DO
+   match by ID, how many actually carry usable GO annotation? A file can
+   score 100% on namespace alignment (nearly every gene in the genome is
+   listed) while only a small fraction of those rows have real GO terms
+   -- this is a DIFFERENT number from namespace alignment, and reporting
+   only the first one risks false confidence. For Chlamydomonas, real
+   ID alignment was ~100%, real GO coverage was ~18%; conflating the two
+   would have been a genuine mistake.
 
 Works against any tab-delimited annotation file, since format varies by
 source: GAF files have no header and use '!' as a comment/header-line
-prefix; Phytozome-style annotation_info.txt files have a real header row.
-You tell it which column holds the ID and whether there's a header,
-rather than the tool guessing.
+prefix; Phytozome-style annotation_info.txt files have a header row that
+is itself '#'-prefixed (a real header, not a comment to skip, confirmed
+against the actual Chlamydomonas file, see load_annotation_ids's
+docstring).
 
-Example, matching the real Chlamydomonas Phytozome check:
+Example, matching the real Chlamydomonas Phytozome check, both numbers
+at once:
 
     python scripts/check_id_overlap.py \\
         --gene-table data/raw/CR_3D.gene_data.tsv.gz \\
@@ -24,7 +37,7 @@ Example, matching the real Chlamydomonas Phytozome check:
         --strip-id-suffix '\\.v\\d+\\.\\d+$' \\
         --annotation-file data/go_reference/CR/CR.annotation_info.txt.gz \\
         --annotation-id-col locusName \\
-        --annotation-has-header
+        --annotation-go-col GO
 
 Example against a GAF file (no header, ID typically in column 2, 0-indexed
 column 1 -- confirm against the real GAF spec for the file in hand):
@@ -67,27 +80,30 @@ def load_gene_table_ids(path, id_col, strip_id_suffix=None):
     return set(ids), len(df)
 
 
-def load_annotation_ids(path, id_col, has_header=True, comment_char="#"):
+def _resolve_header(header_line, comment_char):
     """
-    Returns a set of unique IDs found in the given column of a tab-delimited
-    annotation file, plain or gzipped.
-
-    id_col: column NAME if has_header=True, or a 0-indexed column NUMBER
-    (as an int or a string convertible to int) if has_header=False.
-
-    For GAF files (has_header=False), pass comment_char='!' -- the whole
-    header block in a real GAF file is '!'-prefixed, there is no separate
-    column-name header row to parse, comment lines are simply skipped.
-
-    For has_header=True files, the FIRST non-empty line is always treated
+    The FIRST non-empty line of a has_header=True file is always treated
     as the header, even if it is itself comment-prefixed (a leading
-    comment_char is stripped from it, not used to skip it) -- Phytozome's
-    own annotation_info.txt ships its header as "#pacId\tlocusName\t...",
+    comment_char is stripped, not used to skip the line) -- Phytozome's
+    own annotation_info.txt ships its header as "#pacId\\tlocusName\\t...",
     a real, load-bearing header line that happens to start with '#', not
     a comment to discard. Confirmed against the real Chlamydomonas file:
     treating it as a comment silently shifted the "header" to the first
-    real data row instead. Any comment_char-prefixed line AFTER the
-    header is still skipped normally.
+    real data row instead.
+    """
+    if comment_char and header_line.startswith(comment_char):
+        return header_line[1:].split("\t")
+    return header_line.split("\t")
+
+
+def load_annotation_ids(path, id_col, has_header=True, comment_char="#"):
+    """
+    Returns a set of unique IDs found in the given column of a tab-delimited
+    annotation file, plain or gzipped. Namespace-alignment check only, use
+    load_annotation_ids_with_go_status() for the coverage check too.
+
+    id_col: column NAME if has_header=True, or a 0-indexed column NUMBER
+    (as an int or a string convertible to int) if has_header=False.
     """
     ids = set()
     header = None
@@ -100,8 +116,7 @@ def load_annotation_ids(path, id_col, has_header=True, comment_char="#"):
                 continue
 
             if has_header and header is None:
-                header_line = line[1:] if comment_char and line.startswith(comment_char) else line
-                header = header_line.split("\t")
+                header = _resolve_header(line, comment_char)
                 if id_col not in header:
                     raise ValueError(
                         f"'{id_col}' not found in {path}'s header. Columns present: {header}"
@@ -119,26 +134,86 @@ def load_annotation_ids(path, id_col, has_header=True, comment_char="#"):
     return ids
 
 
+def load_annotation_ids_with_go_status(path, id_col, go_col, has_header=True, comment_char="#"):
+    """
+    Returns dict {id: has_go} for every ID found in id_col, where has_go
+    is True if that ID has a non-empty value in go_col on ANY of its rows
+    (a locus can appear on multiple rows, e.g. one row per transcript --
+    if any row carries GO data, the gene counts as annotated). Requires
+    has_header=True, since go_col is looked up by name.
+    """
+    if not has_header:
+        raise ValueError("load_annotation_ids_with_go_status requires has_header=True, "
+                          "go_col is looked up by name.")
+
+    status = {}
+    header = None
+    id_idx = None
+    go_idx = None
+
+    with _opener(path)(path, "rt") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+
+            if header is None:
+                header = _resolve_header(line, comment_char)
+                for needed in (id_col, go_col):
+                    if needed not in header:
+                        raise ValueError(
+                            f"'{needed}' not found in {path}'s header. Columns present: {header}"
+                        )
+                id_idx = header.index(id_col)
+                go_idx = header.index(go_col)
+                continue
+
+            if comment_char and line.startswith(comment_char):
+                continue
+
+            fields = line.split("\t")
+            if id_idx >= len(fields):
+                continue
+            gene_id = fields[id_idx]
+            has_go_here = go_idx < len(fields) and fields[go_idx].strip() != ""
+            status[gene_id] = status.get(gene_id, False) or has_go_here
+
+    return status
+
+
 def check_id_overlap(gene_table_path, gene_id_col, annotation_file_path,
                       annotation_id_col, strip_id_suffix=None,
                       annotation_has_header=True, annotation_comment_char="#",
-                      sample_size=10):
+                      annotation_go_col=None, sample_size=10):
     """
     Runs the full check. Returns a dict report, does not print anything
     itself, so it can be used programmatically (e.g. from tests) as well
     as from the CLI below.
+
+    If annotation_go_col is given, the report ALSO includes GO-coverage
+    numbers (report['go_coverage_*']), answering a genuinely different
+    question from namespace alignment alone, see this module's docstring.
     """
     gene_ids, n_total_rows = load_gene_table_ids(gene_table_path, gene_id_col, strip_id_suffix)
-    annotation_ids = load_annotation_ids(
-        annotation_file_path, annotation_id_col,
-        has_header=annotation_has_header, comment_char=annotation_comment_char,
-    )
+
+    if annotation_go_col:
+        go_status = load_annotation_ids_with_go_status(
+            annotation_file_path, annotation_id_col, annotation_go_col,
+            has_header=annotation_has_header, comment_char=annotation_comment_char,
+        )
+        annotation_ids = set(go_status.keys())
+    else:
+        go_status = None
+        annotation_ids = load_annotation_ids(
+            annotation_file_path, annotation_id_col,
+            has_header=annotation_has_header, comment_char=annotation_comment_char,
+        )
 
     matched = gene_ids & annotation_ids
     unmatched = gene_ids - annotation_ids
     match_rate = len(matched) / len(gene_ids) if gene_ids else 0.0
 
-    return {
+    report = {
         "n_gene_table_rows": n_total_rows,
         "n_gene_table_ids": len(gene_ids),
         "n_annotation_ids": len(annotation_ids),
@@ -148,6 +223,14 @@ def check_id_overlap(gene_table_path, gene_id_col, annotation_file_path,
         "unmatched_sample": sorted(unmatched)[:sample_size],
     }
 
+    if go_status is not None:
+        matched_with_go = {gid for gid in matched if go_status.get(gid, False)}
+        go_coverage_rate = len(matched_with_go) / len(gene_ids) if gene_ids else 0.0
+        report["go_coverage_n"] = len(matched_with_go)
+        report["go_coverage_rate"] = go_coverage_rate
+
+    return report
+
 
 def print_report(report, gene_table_path, annotation_file_path):
     print(f"Gene table:      {gene_table_path}")
@@ -156,23 +239,23 @@ def print_report(report, gene_table_path, annotation_file_path):
     print(f"Annotation file: {annotation_file_path}")
     print(f"  unique IDs:    {report['n_annotation_ids']}")
     print()
-    print(f"Matched:   {report['n_matched']} / {report['n_gene_table_ids']} "
+    print("--- Question 1: does the ID namespace line up at all? ---")
+    print(f"Namespace match: {report['n_matched']} / {report['n_gene_table_ids']} "
           f"({report['match_rate']:.1%})")
-    print(f"Unmatched: {report['n_unmatched']}")
+    print(f"Unmatched:       {report['n_unmatched']}")
     print()
 
     if report["match_rate"] < 0.05:
-        print("WARNING: match rate under 5%. This looks like a namespace mismatch, "
+        print("WARNING: namespace match under 5%. This looks like a namespace mismatch, "
               "not sparse coverage -- check --strip-id-suffix, --gene-id-col, and "
               "--annotation-id-col before trusting this annotation source at all. "
               "This is the exact pattern a real strain/assembly mismatch produced "
               "for Chlamydomonas (see docs/examples/chlamydomonas.md).")
-    elif report["match_rate"] < 0.5:
-        print("Match rate is real but modest. Confirm this is plausible sparse "
-              "annotation coverage for this source (check a few unmatched IDs below "
-              "by hand) rather than assuming it, before committing to this source.")
     else:
-        print("Match rate looks like plausible real coverage, not a namespace mismatch.")
+        print("Namespace match looks like real ID alignment, not a mismatch. "
+              "This does NOT yet tell you how much usable GO coverage exists -- "
+              "see Question 2 below if --annotation-go-col was given, or run this "
+              "tool again with it if not.")
 
     if report["unmatched_sample"]:
         print()
@@ -180,11 +263,32 @@ def print_report(report, gene_table_path, annotation_file_path):
         for uid in report["unmatched_sample"]:
             print(f"  {uid}")
 
+    if "go_coverage_rate" in report:
+        print()
+        print("--- Question 2: of the genes that match, how many actually carry ---")
+        print("--- usable GO annotation? (a DIFFERENT number from namespace match) ---")
+        print(f"GO coverage: {report['go_coverage_n']} / {report['n_gene_table_ids']} "
+              f"({report['go_coverage_rate']:.1%})")
+        print()
+        print("This is the number that predicts how many genes reference/build_godb.py "
+              "will actually annotate, and therefore how large your real enrichment "
+              "population will be -- namespace match alone (Question 1) does not tell "
+              "you this. A high namespace match with low GO coverage (as with the real "
+              "Chlamydomonas/Phytozome case: ~100% namespace match, ~18% GO coverage) "
+              "is a real, expected tradeoff for some annotation sources, not a bug.")
+    elif report["match_rate"] >= 0.05:
+        print()
+        print("Note: GO coverage was not checked (no --annotation-go-col given). "
+              "A high namespace match here does not by itself mean most genes will "
+              "end up annotated once reference/build_godb.py runs -- rerun with "
+              "--annotation-go-col to get that number too before committing to this "
+              "source.")
+
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        description="Check gene-ID overlap between a real gene table and a candidate "
-                     "GO annotation source, before trusting the annotation source.",
+        description="Check gene-ID namespace alignment, and optionally GO coverage, "
+                     "between a real gene table and a candidate GO annotation source.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--gene-table", required=True,
@@ -200,12 +304,18 @@ def build_parser():
     parser.add_argument("--annotation-id-col", required=True,
                          help="Column NAME (if the file has a header) or 0-indexed "
                               "column NUMBER (if it does not) holding the gene/locus ID.")
+    parser.add_argument("--annotation-go-col", default=None,
+                         help="Optional column NAME holding GO term data. If given, "
+                              "also reports what fraction of matched genes actually "
+                              "carry non-empty GO data, a different question from "
+                              "namespace alignment alone. Requires --annotation-has-header.")
     parser.add_argument("--annotation-has-header", action=argparse.BooleanOptionalAction,
                          default=True,
                          help="Whether --annotation-file has a real header row. GAF "
                               "files do not (use --no-annotation-has-header).")
     parser.add_argument("--annotation-comment-char", default="#",
-                         help="Lines starting with this are skipped. Use '!' for GAF files.")
+                         help="Lines starting with this are skipped (after the header, "
+                              "if any). Use '!' for GAF files.")
 
     parser.add_argument("--sample-size", type=int, default=10,
                          help="How many unmatched IDs to print.")
@@ -223,6 +333,7 @@ def main():
         strip_id_suffix=args.strip_id_suffix,
         annotation_has_header=args.annotation_has_header,
         annotation_comment_char=args.annotation_comment_char,
+        annotation_go_col=args.annotation_go_col,
         sample_size=args.sample_size,
     )
     print_report(report, args.gene_table, args.annotation_file)
