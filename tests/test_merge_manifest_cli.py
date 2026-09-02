@@ -7,6 +7,7 @@ multi-source path, kept separate from the existing single-source
 (read_merge_manifest, load_merged_table) on top of everything already
 tested via --input-table.
 """
+import os
 import pickle
 import subprocess
 import sys
@@ -18,6 +19,10 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = REPO_ROOT / "scripts" / "run_pipeline.py"
+
+import sys
+sys.path.insert(0, str(REPO_ROOT))
+from scripts.run_pipeline import read_merge_manifest
 
 
 def make_synthetic_godb(path):
@@ -166,3 +171,37 @@ def test_cli_merge_manifest_missing_file_fails_clearly(tmp_path):
         "--dataset-name", "test",
     ])
     assert result.returncode != 0
+
+
+def test_read_merge_manifest_resolves_relative_paths_against_manifest_location_not_cwd(tmp_path):
+    """Real regression guard: a manifest's relative 'path' values must
+    resolve relative to WHERE THE MANIFEST FILE ITSELF LIVES, not the
+    current working directory of whatever is reading it. This is what
+    lets one manifest work from both the CLI (run from the repo root)
+    and a notebook (run from notebooks/) without needing two copies --
+    a real problem this fixes, see run_pipeline.py's read_merge_manifest
+    docstring."""
+    # Simulate a real layout: manifest lives in a subdirectory, data
+    # lives two levels up from it, path written relative to the manifest.
+    manifest_subdir = tmp_path / "manifests"
+    manifest_subdir.mkdir()
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+
+    data_file = data_dir / "source.tsv"
+    data_file.write_text("gene_id\tmetric\ng1\t1.0\n")
+
+    manifest_path = manifest_subdir / "manifest.txt"
+    manifest_path.write_text(
+        "[cond_a]\n"
+        "path = ../data/source.tsv\n"
+        "value_col = metric\n"
+    )
+
+    sources = read_merge_manifest(str(manifest_path))
+    assert len(sources) == 1
+    resolved_path, value_col, section_name = sources[0]
+
+    # The resolved path must point at the real file, regardless of CWD
+    assert os.path.exists(resolved_path)
+    assert os.path.abspath(resolved_path) == os.path.abspath(str(data_file))

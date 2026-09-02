@@ -1,0 +1,14 @@
+# docs/examples/manifests/merge_tpm.txt
+#
+# One canonical file, works from both the CLI (run from the repo root)
+# and notebooks/select_cluster_k.ipynb, since paths below are resolved
+# relative to THIS FILE'S location, not the caller's working directory.
+# See scripts/run_pipeline.py's read_merge_manifest() docstring.
+
+[cond_3D]
+path = ../../../data/raw/CR_3D.gene_data.tsv.gz
+value_col = TPM
+
+[cond_6D]
+path = ../../../data/raw/CR_6D.gene_data.tsv.gz
+value_col = TPM

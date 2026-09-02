@@ -1,1 +1,8 @@
+# Seed reference for scripts/check_id_overlap.py's future use: when
+# sourcing a candidate GO annotation file for a NEW species, check here
+# first for a UniProt-GOA per-proteome file, then verify it with
+# check_id_overlap.py before trusting it (see the real Chlamydomonas
+# strain/assembly mismatch this exact check caught, in
+# docs/examples/chlamydomonas.md).
+
 https://ftp.ebi.ac.uk/pub/databases/GO/goa/proteomes/
