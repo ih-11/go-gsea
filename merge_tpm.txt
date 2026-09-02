@@ -1,7 +1,0 @@
-[cond_3D]
-path = data/raw/CR_3D.gene_data.tsv.gz
-value_col = TPM
-
-[cond_6D]
-path = data/raw/CR_6D.gene_data.tsv.gz
-value_col = TPM

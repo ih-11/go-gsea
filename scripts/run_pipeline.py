@@ -225,11 +225,24 @@ def build_population_filters(args):
 
 
 def read_merge_manifest(manifest_path):
+    """
+    A relative "path" value inside the manifest is resolved relative to
+    the MANIFEST FILE'S OWN LOCATION, not the current working directory
+    of whatever process is reading it. This is what lets one canonical
+    manifest file work correctly whether invoked from the repo root (CLI)
+    or from notebooks/ (notebooks/select_cluster_k.ipynb) without needing
+    two separate copies with different relative paths -- a real, earlier
+    problem in this project (a manifest written with CLI-relative paths
+    failed with FileNotFoundError when read from a notebook). Absolute
+    paths are left untouched.
+    """
     parser = configparser.ConfigParser()
     parser.optionxform = str
     read_files = parser.read(manifest_path)
     if not read_files:
         raise FileNotFoundError(f"Merge manifest not found or empty: {manifest_path}")
+
+    manifest_dir = os.path.dirname(os.path.abspath(manifest_path))
 
     sources = []
     for section in parser.sections():
@@ -237,7 +250,10 @@ def read_merge_manifest(manifest_path):
         missing = [k for k in ("path", "value_col") if k not in section_dict]
         if missing:
             raise ValueError(f"Merge manifest section '{section}' missing key(s): {missing}")
-        sources.append((section_dict["path"], section_dict["value_col"], section))
+
+        raw_path = section_dict["path"]
+        resolved_path = raw_path if os.path.isabs(raw_path) else os.path.join(manifest_dir, raw_path)
+        sources.append((resolved_path, section_dict["value_col"], section))
 
     return sources
 
