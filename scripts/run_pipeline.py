@@ -73,7 +73,7 @@ import pandas as pd
 
 from labelers.labelers import rank_tail, explicit_threshold, boolean_flag, cluster
 from enrichment.ora import run_ora
-from enrichment.output import write_results
+from enrichment.output import write_results, build_provenance
 from dataprep.merge_tables import merge_gene_tables
 from filters.population import (
     chain_filters, read_depth_filter, usage_filter, min_group_size_filter,
@@ -337,7 +337,20 @@ def main():
     print(f"Tested {len(result)} (class, GO term) rows, "
           f"{int(result['significance'].sum()) if len(result) else 0} significant")
 
-    written = write_results(result, args.output_dir, args.dataset_name)
+    run_params = {
+        "label_strategy": args.label_strategy,
+        "metric_col": args.metric_col,
+        "thresh_type": args.thresh_type,
+        "thresh": args.thresh,
+        "unknown_ratio_thresh": args.unknown_ratio_thresh,
+        "dataset_name": args.dataset_name,
+        "input_table": args.input_table,
+        "merge_manifest": args.merge_manifest,
+        "godb": args.godb,
+    }
+    provenance = build_provenance(run_parameters=run_params)
+
+    written = write_results(result, args.output_dir, args.dataset_name, provenance=provenance)
 
     if args.slim_godb:
         if not args.slim_output_dir:
@@ -351,7 +364,8 @@ def main():
         )
         print(f"[GO-slim] Tested {len(slim_result)} rows, "
               f"{int(slim_result['significance'].sum()) if len(slim_result) else 0} significant")
-        slim_written = write_results(slim_result, args.slim_output_dir, args.dataset_name)
+        slim_written = write_results(slim_result, args.slim_output_dir, args.dataset_name,
+                                       provenance=provenance)
         print("[GO-slim] Files written:")
         for key, path in slim_written.items():
             print(f"  {key}: {path}")

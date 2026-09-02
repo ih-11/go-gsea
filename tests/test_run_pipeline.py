@@ -69,7 +69,11 @@ def test_cli_writes_expected_output_files(tmp_path):
     assert result.returncode == 0, result.stderr
     all_file = output_dir / "summary.synthtest.all.tsv"
     assert all_file.exists()
-    df = pd.read_csv(all_file, sep="\t")
+    # comment="#" is required: every real output file now carries a
+    # provenance metadata line as its first line (see enrichment/output.py
+    # and run_pipeline.py's build_provenance() wiring), matching the same
+    # convention every other reader in this codebase already uses.
+    df = pd.read_csv(all_file, sep="\t", comment="#")
     assert set(df["class"].unique()) <= {"High", "Low"}
 
 
