@@ -38,12 +38,21 @@ and boolean_flag each require EXACTLY ONE. cluster accepts ONE OR MORE.
 
 Optional Stage A population-eligibility filters (filters/population.py)
 can be applied before labeling, in this fixed order: read-depth, then
-usage, then minimum group size. All are off by default -- omitting every
---read-depth-col/--usage-col/--min-group-col flag reproduces the exact
-prior behavior of this script unchanged:
+usage, then minimum group size, then --drop-uninformative. All are off
+by default -- omitting every --read-depth-col/--usage-col/--min-group-col/
+--drop-uninformative flag reproduces the exact prior behavior of this
+script unchanged:
 
     --read-depth-col T_n_reads --read-depth-thresh 10 \\
     --usage-col rTrans-usage.b --usage-thresh 0.05
+
+--drop-uninformative is a special case: use it ONLY with
+--label-strategy cluster, to avoid a real distance-clustering artifact
+where genes tied at a shared floor value (e.g. all zero) mechanically
+merge into a spuriously "perfect" cluster. It does not mean those genes
+lack real signal -- pair it with a companion boolean_flag or
+explicit_threshold run on the same population to test them on their own
+terms, see filters/population.py's docstring for the full reasoning.
 
 This script knows nothing about Chlamydomonas, PR, or any specific
 species/condition -- every detail above is a command-line argument or a
@@ -68,6 +77,7 @@ from enrichment.output import write_results
 from dataprep.merge_tables import merge_gene_tables
 from filters.population import (
     chain_filters, read_depth_filter, usage_filter, min_group_size_filter,
+    drop_uninformative_for_clustering,
 )
 
 
@@ -128,6 +138,18 @@ def build_parser():
                               "sites per transcript). Requires --min-group-n.")
     parser.add_argument("--min-group-n", type=int, default=None,
                          help="Minimum group size (inclusive) for --min-group-col.")
+    parser.add_argument("--drop-uninformative", action="store_true",
+                         help="ONLY use with --label-strategy cluster. Drop rows where every "
+                              "--metric-col value is <= --drop-uninformative-thresh (default 0) "
+                              "before clustering, to avoid a real distance-clustering artifact "
+                              "where genes tied at the floor mechanically merge into one "
+                              "spuriously 'perfect' cluster. Does NOT mean these genes are "
+                              "biologically uninformative -- run a companion boolean_flag or "
+                              "explicit_threshold pass on the same population to test them on "
+                              "their own terms, see filters.population."
+                              "drop_uninformative_for_clustering and the worked example.")
+    parser.add_argument("--drop-uninformative-thresh", type=float, default=0.0,
+                         help="Threshold used by --drop-uninformative.")
 
     parser.add_argument("--label-strategy", required=True, choices=list(LABEL_STRATEGIES.keys()))
     parser.add_argument("--pct", type=float, default=10,
@@ -276,6 +298,14 @@ def main():
         n_before = len(df)
         df = chain_filters(df, *population_filters)
         print(f"Population filter (Stage A): {n_before} -> {len(df)} genes")
+
+    if args.drop_uninformative:
+        n_before = len(df)
+        df = drop_uninformative_for_clustering(
+            df, args.metric_col, thresh=args.drop_uninformative_thresh
+        )
+        print(f"Dropped uninformative rows (all metric columns <= "
+              f"{args.drop_uninformative_thresh}): {n_before} -> {len(df)} genes")
 
     labeled_df = apply_label_strategy(df, args)
     labeled_df = labeled_df.rename(columns={args.id_col: "gene_id"})
