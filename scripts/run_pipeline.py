@@ -2,7 +2,7 @@
 """
 scripts/run_pipeline.py
 
-CLI entry point tying reference/, filters/, labelers/, dataprep/, and
+CLI entry point tying reference/, dataprep/, filters/, labelers/, and
 enrichment/ together. Wraps the same steps every real run so far has
 done by hand in an interactive script.
 
@@ -21,9 +21,7 @@ Single-source example, matching the real Chlamydomonas PR_gene run:
         --unknown-ratio-thresh 0.9 \\
         --thresh-type p --thresh 0.01
 
-Multi-source (merged) example, for real multi-condition clustering, e.g.
-PR_gene measured at two growth stages combined into one wide table
-before clustering (see dataprep/merge_tables.py):
+Multi-source (merged) example, for real multi-condition clustering:
 
     python scripts/run_pipeline.py \\
         --merge-manifest merge_pr_gene.txt \\
@@ -36,10 +34,16 @@ before clustering (see dataprep/merge_tables.py):
 Exactly one of --input-table / --merge-manifest must be given.
 
 --metric-col accepts one or more values. rank_tail, explicit_threshold,
-and boolean_flag each require EXACTLY ONE (that is inherent to what
-those strategies mean). cluster accepts ONE OR MORE, since
-labelers.cluster() has supported multi-column input since it was first
-written.
+and boolean_flag each require EXACTLY ONE. cluster accepts ONE OR MORE.
+
+Optional Stage A population-eligibility filters (filters/population.py)
+can be applied before labeling, in this fixed order: read-depth, then
+usage, then minimum group size. All are off by default -- omitting every
+--read-depth-col/--usage-col/--min-group-col flag reproduces the exact
+prior behavior of this script unchanged:
+
+    --read-depth-col T_n_reads --read-depth-thresh 10 \\
+    --usage-col rTrans-usage.b --usage-thresh 0.05
 
 This script knows nothing about Chlamydomonas, PR, or any specific
 species/condition -- every detail above is a command-line argument or a
@@ -49,8 +53,6 @@ manifest file, not a hardcoded assumption.
 import sys
 import os
 
-# Ensure the repo root (parent of this scripts/ folder) is importable,
-# regardless of the current working directory this script is invoked from.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
@@ -64,6 +66,9 @@ from labelers.labelers import rank_tail, explicit_threshold, boolean_flag, clust
 from enrichment.ora import run_ora
 from enrichment.output import write_results
 from dataprep.merge_tables import merge_gene_tables
+from filters.population import (
+    chain_filters, read_depth_filter, usage_filter, min_group_size_filter,
+)
 
 
 LABEL_STRATEGIES = {
@@ -73,9 +78,6 @@ LABEL_STRATEGIES = {
     "cluster": cluster,
 }
 
-# Strategies that operate on exactly one column vs. strategies that can
-# take one or more. Single-column strategies fail loudly if given more
-# than one --metric-col value, rather than silently using only the first.
 SINGLE_COLUMN_STRATEGIES = {"rank_tail", "explicit_threshold", "boolean_flag"}
 MULTI_COLUMN_STRATEGIES = {"cluster"}
 
@@ -92,32 +94,40 @@ def build_parser():
     input_group.add_argument("--merge-manifest",
                               help="Path to a plain-text, INI-style manifest listing "
                                    "multiple source files to merge into one wide table "
-                                   "before labeling (see dataprep/merge_tables.py and this "
-                                   "script's module docstring for the manifest format). "
-                                   "Mutually exclusive with --input-table.")
+                                   "before labeling. Mutually exclusive with --input-table.")
 
     parser.add_argument("--godb", required=True,
                          help="Path to a cached .godb pickle from reference/build_godb.py.")
     parser.add_argument("--metric-col", required=True, nargs="+",
-                         help="Column(s) to label genes by. With --input-table, these are "
-                              "columns already present in that file. With --merge-manifest, "
-                              "these should be the manifest's [section] names, which become "
-                              "the merged table's column names. "
-                              "rank_tail/explicit_threshold/boolean_flag require exactly one. "
-                              "cluster accepts one or more.")
+                         help="Column(s) to label genes by. rank_tail/explicit_threshold/"
+                              "boolean_flag require exactly one. cluster accepts one or more.")
     parser.add_argument("--id-col", default="gene_id",
                          help="Gene ID column name in the input table(s).")
     parser.add_argument("--strip-id-suffix", default=None,
-                         help="Regex to strip from gene IDs before matching against the godb "
-                              "(e.g. a trailing version suffix like '.v6.1'). Applied BEFORE "
-                              "--exclude-id, see that flag's help for what this means in practice. "
-                              "Applied per-source when --merge-manifest is used, before merging.")
+                         help="Regex to strip from gene IDs before matching against the godb. "
+                              "Applied BEFORE --exclude-id.")
     parser.add_argument("--exclude-id", action="append", default=[],
-                         help="Gene ID(s) to exclude before labeling (e.g. a spike-in control). "
-                              "Applied AFTER --strip-id-suffix -- if both flags are used, give "
-                              "the already-stripped form of the ID here, not the raw one, or the "
-                              "exclusion will silently fail to match. Can be given multiple times. "
-                              "Applied after merging when --merge-manifest is used.")
+                         help="Gene ID(s) to exclude before labeling. Applied AFTER "
+                              "--strip-id-suffix -- give the already-stripped form if both "
+                              "are used. Can be given multiple times.")
+
+    # --- Stage A: population-eligibility filters, all optional, off by default ---
+    parser.add_argument("--read-depth-col", default=None,
+                         help="Column to apply filters.population.read_depth_filter on. "
+                              "Requires --read-depth-thresh.")
+    parser.add_argument("--read-depth-thresh", type=float, default=None,
+                         help="Minimum value (inclusive) for --read-depth-col.")
+    parser.add_argument("--usage-col", default=None,
+                         help="Column to apply filters.population.usage_filter on. "
+                              "Requires --usage-thresh.")
+    parser.add_argument("--usage-thresh", type=float, default=None,
+                         help="Minimum value (inclusive) for --usage-col.")
+    parser.add_argument("--min-group-col", default=None,
+                         help="Group-by column to apply filters.population.min_group_size_filter "
+                              "on (e.g. a transcript ID, to require a minimum number of surviving "
+                              "sites per transcript). Requires --min-group-n.")
+    parser.add_argument("--min-group-n", type=int, default=None,
+                         help="Minimum group size (inclusive) for --min-group-col.")
 
     parser.add_argument("--label-strategy", required=True, choices=list(LABEL_STRATEGIES.keys()))
     parser.add_argument("--pct", type=float, default=10,
@@ -137,8 +147,8 @@ def build_parser():
     parser.add_argument("--thresh-type", choices=["p", "q"], default="p")
     parser.add_argument("--thresh", type=float, default=0.01)
     parser.add_argument("--slim-godb", default=None,
-                         help="Optional path to a cached slim .godb (from build_and_cache_slim_godb). "
-                              "If given, also runs enrichment against it and writes to --slim-output-dir.")
+                         help="Optional path to a cached slim .godb. If given, also runs "
+                              "enrichment against it and writes to --slim-output-dir.")
     parser.add_argument("--slim-output-dir", default=None,
                          help="Required if --slim-godb is given.")
 
@@ -146,11 +156,6 @@ def build_parser():
 
 
 def validate_metric_cols(metric_cols, label_strategy):
-    """
-    Raises ValueError if metric_cols' length doesn't match what
-    label_strategy actually supports. Kept as its own function so this
-    check is easy to unit test in isolation from argparse/CLI plumbing.
-    """
     if label_strategy in SINGLE_COLUMN_STRATEGIES and len(metric_cols) != 1:
         raise ValueError(
             f"--label-strategy {label_strategy} requires exactly one --metric-col value, "
@@ -162,25 +167,42 @@ def validate_metric_cols(metric_cols, label_strategy):
         )
 
 
+def build_population_filters(args):
+    """
+    Returns a list of (filter_fn, kwargs) tuples, ready to pass to
+    filters.population.chain_filters(), in a fixed order: read-depth,
+    then usage, then minimum group size. Each is only included if its
+    matching *-col flag was given. Raises ValueError if a *-col flag is
+    given without its required *-thresh/*-n counterpart, rather than
+    silently skipping the filter.
+    """
+    population_filters = []
+
+    if args.read_depth_col:
+        if args.read_depth_thresh is None:
+            raise ValueError("--read-depth-thresh is required when --read-depth-col is given")
+        population_filters.append(
+            (read_depth_filter, {"col": args.read_depth_col, "thresh": args.read_depth_thresh})
+        )
+
+    if args.usage_col:
+        if args.usage_thresh is None:
+            raise ValueError("--usage-thresh is required when --usage-col is given")
+        population_filters.append(
+            (usage_filter, {"col": args.usage_col, "thresh": args.usage_thresh})
+        )
+
+    if args.min_group_col:
+        if args.min_group_n is None:
+            raise ValueError("--min-group-n is required when --min-group-col is given")
+        population_filters.append(
+            (min_group_size_filter, {"group_col": args.min_group_col, "min_n": args.min_group_n})
+        )
+
+    return population_filters
+
+
 def read_merge_manifest(manifest_path):
-    """
-    Reads a plain-text, INI-style merge manifest. Each [section] becomes
-    one entry in the sources list passed to dataprep.merge_gene_tables():
-    (path, value_col, section_name) -- the section name IS the output
-    column name, so --metric-col values should match the manifest's
-    section names directly.
-
-    Required keys per section: path, value_col
-
-    Example:
-        [cond_3D]
-        path = data/raw/CR_3D.gene_data.tsv.gz
-        value_col = PR_gene
-
-        [cond_6D]
-        path = data/raw/CR_6D.gene_data.tsv.gz
-        value_col = PR_gene
-    """
     parser = configparser.ConfigParser()
     parser.optionxform = str
     read_files = parser.read(manifest_path)
@@ -199,18 +221,6 @@ def read_merge_manifest(manifest_path):
 
 
 def load_input_table(path, id_col, strip_id_suffix, exclude_ids, metric_cols):
-    """
-    Single-source load path. Order of operations: --strip-id-suffix is
-    applied first, --exclude-id matching happens second, against the
-    already-stripped IDs -- if a raw (unstripped) ID is passed to
-    --exclude-id while --strip-id-suffix is also given, the exclusion
-    will silently fail to match anything, since the comparison happens
-    after stripping, not before.
-
-    dropna is applied across ALL given metric_cols -- a row missing any
-    one of them is dropped, matching merge_gene_tables()'s own inner-join
-    philosophy (a gene needs a valid value in every column being used).
-    """
     df = pd.read_csv(path, sep="\t", comment="#")
     if strip_id_suffix:
         df[id_col] = df[id_col].apply(lambda g: re.sub(strip_id_suffix, "", g))
@@ -221,15 +231,6 @@ def load_input_table(path, id_col, strip_id_suffix, exclude_ids, metric_cols):
 
 
 def load_merged_table(manifest_path, id_col, strip_id_suffix, exclude_ids):
-    """
-    Multi-source load path. Reads the merge manifest, calls
-    merge_gene_tables() to inner-join every listed source into one wide
-    table, THEN applies --strip-id-suffix / --exclude-id to the merged
-    result -- same order of operations as the single-source path, just
-    after the merge instead of before, since the merge itself needs raw
-    (unstripped) IDs to match correctly across source files that may all
-    use the same ID convention consistently.
-    """
     sources = read_merge_manifest(manifest_path)
     df = merge_gene_tables(sources, id_col=id_col, how="inner")
     if strip_id_suffix:
@@ -255,6 +256,7 @@ def apply_label_strategy(df, args):
 def main():
     args = build_parser().parse_args()
     validate_metric_cols(args.metric_col, args.label_strategy)
+    population_filters = build_population_filters(args)  # validates *-thresh/*-n pairing early
 
     with open(args.godb, "rb") as f:
         godb = pickle.load(f)
@@ -269,6 +271,11 @@ def main():
         df = load_input_table(args.input_table, args.id_col, args.strip_id_suffix,
                                args.exclude_id, args.metric_col)
         print(f"Loaded {len(df)} genes from {args.input_table}")
+
+    if population_filters:
+        n_before = len(df)
+        df = chain_filters(df, *population_filters)
+        print(f"Population filter (Stage A): {n_before} -> {len(df)} genes")
 
     labeled_df = apply_label_strategy(df, args)
     labeled_df = labeled_df.rename(columns={args.id_col: "gene_id"})
